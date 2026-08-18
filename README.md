@@ -1,26 +1,43 @@
-# Carlos TV v0.2
+# Carlos TV v0.3
 
-Aplicación Android tipo WebView que abre `https://rojadirectaa.net/` dentro de una interfaz propia.
+Aplicación Android nativa para organizar y reproducir listas de televisión en vivo que el usuario tenga autorización para utilizar.
 
-## Mejoras de la versión 0.2
+## Novedades de la versión 0.3
 
-- Barra superior propia con nombre, icono y versión de Carlos TV.
-- Navegación inferior nativa con Atrás, Inicio y Recargar.
-- Pantalla de carga propia para evitar la apariencia de navegador.
-- Bloqueo de ventanas emergentes, incluso las generadas al tocar la pantalla.
-- Bloqueo local de dominios publicitarios comunes y limpieza de elementos invasivos.
-- Reproducción de video HTML5 y modo de pantalla completa.
-- Cookies, almacenamiento web y navegación interna.
+- Nuevo logotipo original de Carlos TV.
+- Interfaz nativa; ya no depende de una página WebView.
+- Catálogo con búsqueda, categorías y favoritos.
+- Reproductor Media3/ExoPlayer con HLS, DASH y video progresivo.
+- Pantalla completa y controles de reproducción.
+- Descarga inicial de la lista pública de IPTV-org:
+  https://iptv-org.github.io/iptv/index.m3u
+- Caché local de seis horas para abrir más rápido y funcionar si la actualización falla.
+- Importación de archivos M3U propios desde el teléfono.
+- Carga de logotipos de canales con respaldo visual cuando no están disponibles.
 - Compatibilidad desde Android 6.0 (API 23).
 
-El filtrado publicitario es local y de mejor esfuerzo: el sitio puede cambiar sus dominios o scripts. La aplicación no descarga ni extrae transmisiones, no elimina protecciones y no controla el contenido del sitio externo. Úsala únicamente para contenido al que tengas acceso legítimo.
+## Formato recomendado
 
-## Obtener el APK desde el celular
+La app espera una lista M3U extendida. Cada canal debe tener una línea EXTINF
+y, en la línea siguiente, un enlace directo HTTP o HTTPS. Los metadatos
+recomendados son tvg-name, tvg-logo, tvg-country, tvg-language y group-title.
+
+La lista general debe terminar normalmente en .m3u; cada señal HLS puede
+terminar en .m3u8. Carlos TV no evade DRM, cuentas, tokens, restricciones del
+proveedor ni protecciones contra uso externo.
+
+## Fuente inicial y disponibilidad
+
+IPTV-org describe su repositorio como una colección de enlaces a canales
+públicamente disponibles y publica sus datos bajo CC0. Carlos TV no aloja ni
+retransmite video. Cada señal pertenece a su proveedor y puede dejar de
+funcionar, cambiar, estar restringida por región o requerir autorización.
+
+## Obtener el APK
 
 1. Abre la pestaña **Actions** del repositorio.
 2. Entra al flujo **Compilar APK** más reciente.
-3. En **Artifacts**, descarga `CarlosTV-v0.2-debug`.
-4. Abre el ZIP descargado y toca `CarlosTV-v0.2-debug.apk`.
-5. Si Android lo solicita, permite temporalmente **Instalar apps desconocidas** para tu navegador o gestor de archivos.
+3. Descarga el artefacto CarlosTV-v0.3-debug.
+4. Abre el ZIP y toca CarlosTV-v0.3-debug.apk.
 
-El APK de prueba queda disponible durante 30 días después de cada compilación. Cada cambio enviado a la rama `main` crea uno nuevo automáticamente.
+Cada cambio enviado a main inicia una compilación nueva.

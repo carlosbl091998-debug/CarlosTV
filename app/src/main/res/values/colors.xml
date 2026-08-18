@@ -1,7 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="black">#FF000000</color>
-    <color name="carlos_blue">#FF1565C0</color>
-    <color name="carlos_blue_dark">#FF0D47A1</color>
+    <color name="carlos_background">#FF070B12</color>
+    <color name="carlos_surface">#FF101826</color>
+    <color name="carlos_surface_high">#FF172337</color>
+    <color name="carlos_border">#FF24354E</color>
+    <color name="carlos_blue">#FF10B7FF</color>
+    <color name="carlos_blue_dark">#FF071426</color>
+    <color name="carlos_lime">#FFA8FF1A</color>
+    <color name="carlos_text_secondary">#FF96A4B8</color>
+    <color name="carlos_error">#FFFF6070</color>
     <color name="white">#FFFFFFFF</color>
 </resources>

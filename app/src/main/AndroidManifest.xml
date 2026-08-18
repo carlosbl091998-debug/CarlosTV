@@ -6,9 +6,9 @@
 
     <application
         android:allowBackup="true"
-        android:icon="@drawable/ic_launcher"
+        android:icon="@drawable/logo_carlos_tv"
         android:label="@string/app_name"
-        android:roundIcon="@drawable/ic_launcher"
+        android:roundIcon="@drawable/logo_carlos_tv"
         android:supportsRtl="true"
         android:theme="@style/Theme.CarlosTV"
         android:usesCleartextTraffic="true">
