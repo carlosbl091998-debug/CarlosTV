@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Carlos TV</string>
+    <string name="loading">Cargando…</string>
+    <string name="connection_error">No se pudo abrir la página. Revisa tu conexión a internet.</string>
+    <string name="retry">Reintentar</string>
+</resources>
