@@ -1,24 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Carlos TV</string>
-    <string name="app_subtitle">Televisión en vivo · v0.3</string>
+    <string name="app_subtitle">Canales en español · v0.4</string>
     <string name="app_icon_description">Icono de Carlos TV</string>
-    <string name="loading">Cargando canales públicos…</string>
-    <string name="connection_error">No se pudo descargar la lista. Revisa tu conexión e inténtalo nuevamente.</string>
+    <string name="loading">Cargando y filtrando canales…</string>
+    <string name="connection_error">No se pudieron cargar las fuentes. Revisa tu conexión e inténtalo nuevamente.</string>
     <string name="retry">Reintentar</string>
-    <string name="hero_title">Tu TV, a tu manera</string>
-    <string name="hero_body">Catálogo limpio, búsqueda rápida y reproducción nativa.</string>
-    <string name="import_list">Cargar mi lista</string>
+    <string name="hero_title">Televisión en español</string>
+    <string name="hero_body">Canales abiertos de México y Latinoamérica en una interfaz limpia.</string>
     <string name="search_hint">Buscar canal…</string>
-    <string name="source_default">Fuente inicial: IPTV-org</string>
-    <string name="source_notice">Los canales dependen de sus proveedores y pueden estar fuera de línea o restringidos por región.</string>
+    <string name="source_default">Fuentes: M3U.CL México + PL Pro</string>
+    <string name="source_notice">La app filtra contenido en español y oculta señales que devuelven errores definitivos.</string>
     <string name="nav_back">Cerrar</string>
     <string name="nav_home">Inicio</string>
     <string name="nav_favorites">Favoritos</string>
     <string name="nav_refresh">Actualizar</string>
-    <string name="nav_my_list">Mi lista</string>
-    <string name="live_badge">NUEVO</string>
-    <string name="use_default_source">Usar la lista pública predeterminada</string>
+    <string name="live_badge">ESPAÑOL</string>
     <string name="no_channels">No encontramos canales con esos filtros.</string>
     <string name="player_connecting">Conectando con la señal…</string>
     <string name="player_live">EN VIVO</string>

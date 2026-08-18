@@ -65,16 +65,6 @@
                 android:textSize="10sp"
                 android:textStyle="bold" />
 
-            <ImageButton
-                android:id="@+id/header_import_button"
-                android:layout_width="44dp"
-                android:layout_height="44dp"
-                android:layout_marginStart="8dp"
-                android:background="@drawable/bg_icon_button"
-                android:contentDescription="@string/import_list"
-                android:padding="10dp"
-                android:src="@drawable/ic_add_list"
-                android:tint="@color/white" />
         </LinearLayout>
 
         <LinearLayout
@@ -111,27 +101,10 @@
                 android:orientation="horizontal">
 
                 <TextView
-                    android:id="@+id/import_button"
-                    android:layout_width="wrap_content"
-                    android:layout_height="42dp"
-                    android:background="@drawable/bg_primary_button"
-                    android:drawableStart="@drawable/ic_add_list_dark"
-                    android:drawablePadding="7dp"
-                    android:gravity="center"
-                    android:paddingStart="16dp"
-                    android:paddingEnd="16dp"
-                    android:text="@string/import_list"
-                    android:textColor="@color/carlos_background"
-                    android:textSize="13sp"
-                    android:textStyle="bold" />
-
-                <TextView
                     android:id="@+id/source_label"
-                    android:layout_width="0dp"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginStart="12dp"
-                    android:layout_weight="1"
-                    android:gravity="end"
+                    android:gravity="start"
                     android:maxLines="2"
                     android:text="@string/source_default"
                     android:textColor="@color/carlos_blue"
@@ -302,18 +275,6 @@
                 android:textSize="11sp"
                 android:textStyle="bold" />
 
-            <TextView
-                android:id="@+id/bottom_import_button"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1"
-                android:drawableTop="@drawable/ic_add_list"
-                android:drawablePadding="3dp"
-                android:gravity="center"
-                android:text="@string/nav_my_list"
-                android:textColor="@color/carlos_text_secondary"
-                android:textSize="11sp"
-                android:textStyle="bold" />
         </LinearLayout>
     </LinearLayout>
 
@@ -387,17 +348,6 @@
             android:textColor="@color/carlos_background"
             android:textStyle="bold" />
 
-        <TextView
-            android:id="@+id/default_source_button"
-            android:layout_width="wrap_content"
-            android:layout_height="44dp"
-            android:layout_marginTop="10dp"
-            android:gravity="center"
-            android:paddingStart="18dp"
-            android:paddingEnd="18dp"
-            android:text="@string/use_default_source"
-            android:textColor="@color/carlos_blue"
-            android:textStyle="bold" />
     </LinearLayout>
 
     <LinearLayout

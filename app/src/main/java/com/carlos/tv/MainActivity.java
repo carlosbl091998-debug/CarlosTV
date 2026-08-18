@@ -1,11 +1,9 @@
 package com.carlos.tv;
 
 import android.app.Activity;
-import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ActivityInfo;
 import android.graphics.drawable.GradientDrawable;
-import android.net.Uri;
 import android.os.Bundle;
 import android.text.Editable;
 import android.text.TextWatcher;
@@ -18,7 +16,6 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import androidx.annotation.Nullable;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.PlaybackException;
@@ -43,17 +40,17 @@ import java.util.concurrent.Executors;
 @UnstableApi
 public class MainActivity extends Activity implements ChannelAdapter.Listener {
 
-    private static final int REQUEST_OPEN_PLAYLIST = 7301;
     private static final String PREFS = "carlos_tv_preferences";
     private static final String PREF_FAVORITES = "favorite_streams";
-    private static final String PREF_CUSTOM_URI = "custom_playlist_uri";
     private static final String ALL_CATEGORIES = "Todos";
 
     private final List<Channel> allChannels = new ArrayList<>();
     private final Set<String> favoriteUrls = new HashSet<>();
+    private final Set<String> unavailableUrls = new HashSet<>();
     private final ExecutorService ioExecutor = Executors.newSingleThreadExecutor();
 
     private PlaylistRepository repository;
+    private ChannelHealthChecker healthChecker;
     private SharedPreferences preferences;
     private ChannelAdapter adapter;
     private RecyclerView recyclerView;
@@ -75,7 +72,8 @@ public class MainActivity extends Activity implements ChannelAdapter.Listener {
     private TextView navHome;
     private TextView navFavorites;
     private ExoPlayer player;
-    private Uri customPlaylistUri;
+    private Channel playingChannel;
+    private String activeSourceName = "";
     private String selectedCategory = ALL_CATEGORIES;
     private boolean favoritesOnly;
     private boolean fullscreen;
@@ -87,6 +85,7 @@ public class MainActivity extends Activity implements ChannelAdapter.Listener {
         setContentView(R.layout.activity_main);
 
         repository = new PlaylistRepository(this);
+        healthChecker = new ChannelHealthChecker();
         preferences = getSharedPreferences(PREFS, MODE_PRIVATE);
         Set<String> storedFavorites = preferences.getStringSet(
                 PREF_FAVORITES,
@@ -97,13 +96,7 @@ public class MainActivity extends Activity implements ChannelAdapter.Listener {
         configureCatalog();
         configureActions();
 
-        String storedUri = preferences.getString(PREF_CUSTOM_URI, "");
-        if (storedUri != null && !storedUri.isEmpty()) {
-            customPlaylistUri = Uri.parse(storedUri);
-            loadCustomPlaylist(customPlaylistUri);
-        } else {
-            loadDefaultPlaylist(false);
-        }
+        loadDefaultPlaylist(false);
     }
 
     private void bindViews() {
@@ -150,12 +143,8 @@ public class MainActivity extends Activity implements ChannelAdapter.Listener {
     }
 
     private void configureActions() {
-        findViewById(R.id.import_button).setOnClickListener(view -> openPlaylistPicker());
-        findViewById(R.id.header_import_button).setOnClickListener(view -> openPlaylistPicker());
-        findViewById(R.id.bottom_import_button).setOnClickListener(view -> openPlaylistPicker());
-        findViewById(R.id.refresh_button).setOnClickListener(view -> refreshActiveSource());
-        findViewById(R.id.retry_button).setOnClickListener(view -> refreshActiveSource());
-        findViewById(R.id.default_source_button).setOnClickListener(view -> useDefaultSource());
+        findViewById(R.id.refresh_button).setOnClickListener(view -> refreshSources());
+        findViewById(R.id.retry_button).setOnClickListener(view -> refreshSources());
 
         navHome.setOnClickListener(view -> {
             favoritesOnly = false;
@@ -174,67 +163,13 @@ public class MainActivity extends Activity implements ChannelAdapter.Listener {
         findViewById(R.id.fullscreen_button).setOnClickListener(view -> toggleFullscreen());
     }
 
-    private void openPlaylistPicker() {
-        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("*/*");
-        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{
-                "application/x-mpegURL",
-                "application/vnd.apple.mpegurl",
-                "audio/mpegurl",
-                "audio/x-mpegurl",
-                "text/plain"
-        });
-        startActivityForResult(intent, REQUEST_OPEN_PLAYLIST);
-    }
-
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != REQUEST_OPEN_PLAYLIST
-                || resultCode != RESULT_OK
-                || data == null
-                || data.getData() == null) {
-            return;
-        }
-
-        Uri uri = data.getData();
-        int flags = data.getFlags()
-                & (Intent.FLAG_GRANT_READ_URI_PERMISSION
-                | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-        try {
-            getContentResolver().takePersistableUriPermission(
-                    uri,
-                    flags & Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        } catch (SecurityException ignored) {
-            // Algunos proveedores permiten leer sin ofrecer permiso persistente.
-        }
-
-        customPlaylistUri = uri;
-        preferences.edit().putString(PREF_CUSTOM_URI, uri.toString()).apply();
-        loadCustomPlaylist(uri);
-    }
-
-    private void refreshActiveSource() {
-        if (customPlaylistUri != null) {
-            loadCustomPlaylist(customPlaylistUri);
-        } else {
-            loadDefaultPlaylist(true);
-        }
-    }
-
-    private void useDefaultSource() {
-        customPlaylistUri = null;
-        preferences.edit().remove(PREF_CUSTOM_URI).apply();
+    private void refreshSources() {
+        unavailableUrls.clear();
         loadDefaultPlaylist(true);
     }
 
     private void loadDefaultPlaylist(boolean forceRefresh) {
         runLoad(() -> repository.loadDefault(forceRefresh));
-    }
-
-    private void loadCustomPlaylist(Uri uri) {
-        runLoad(() -> repository.loadFromDocument(uri));
     }
 
     private void runLoad(PlaylistTask task) {
@@ -273,21 +208,42 @@ public class MainActivity extends Activity implements ChannelAdapter.Listener {
     private void showLoadedChannels(PlaylistRepository.LoadResult result) {
         allChannels.clear();
         allChannels.addAll(result.getChannels());
+        unavailableUrls.clear();
         for (Channel channel : allChannels) {
             channel.setFavorite(favoriteUrls.contains(channel.getStreamUrl()));
         }
 
         selectedCategory = ALL_CATEGORIES;
         favoritesOnly = false;
-        sourceLabel.setText(result.getSourceName()
-                + " · "
-                + allChannels.size()
-                + " canales");
+        activeSourceName = result.getSourceName();
+        updateSourceLabel();
         showLoading(false);
         errorPanel.setVisibility(View.GONE);
         rebuildCategories();
         applyFilters();
         updateNavigation();
+
+        if (!result.isFromCache()) {
+            verifyClearlyUnavailableChannels(new ArrayList<>(allChannels), loadGeneration);
+        }
+    }
+
+    private void verifyClearlyUnavailableChannels(List<Channel> channels, int generation) {
+        sourceLabel.setText(activeSourceName + " · verificando señales");
+        healthChecker.check(channels, failedUrls -> runOnUiThread(() -> {
+            if (generation != loadGeneration || isFinishing()) {
+                return;
+            }
+            unavailableUrls.addAll(failedUrls);
+            rebuildCategories();
+            applyFilters();
+            updateSourceLabel();
+        }));
+    }
+
+    private void updateSourceLabel() {
+        int available = Math.max(0, allChannels.size() - unavailableUrls.size());
+        sourceLabel.setText(activeSourceName + " · " + available + " disponibles");
     }
 
     private void showLoading(boolean show) {
@@ -300,6 +256,9 @@ public class MainActivity extends Activity implements ChannelAdapter.Listener {
 
         Map<String, Integer> counts = new HashMap<>();
         for (Channel channel : allChannels) {
+            if (unavailableUrls.contains(channel.getStreamUrl())) {
+                continue;
+            }
             String category = channel.getCategory();
             Integer currentCount = counts.get(category);
             counts.put(category, currentCount == null ? 1 : currentCount + 1);
@@ -361,6 +320,9 @@ public class MainActivity extends Activity implements ChannelAdapter.Listener {
         List<Channel> visible = new ArrayList<>();
 
         for (Channel channel : allChannels) {
+            if (unavailableUrls.contains(channel.getStreamUrl())) {
+                continue;
+            }
             if (favoritesOnly && !channel.isFavorite()) {
                 continue;
             }
@@ -415,6 +377,7 @@ public class MainActivity extends Activity implements ChannelAdapter.Listener {
 
     private void playChannel(Channel channel) {
         ensurePlayer();
+        playingChannel = channel;
         playerTitle.setText(channel.getName());
         playerMetadata.setText(channel.getMetadata());
         playerStatus.setText(R.string.player_connecting);
@@ -450,6 +413,13 @@ public class MainActivity extends Activity implements ChannelAdapter.Listener {
                     playerProgress.setVisibility(View.VISIBLE);
                     playerStatus.setText(R.string.player_connecting);
                 } else if (playbackState == Player.STATE_READY) {
+                    if (playingChannel != null) {
+                        if (unavailableUrls.remove(playingChannel.getStreamUrl())) {
+                            rebuildCategories();
+                            applyFilters();
+                            updateSourceLabel();
+                        }
+                    }
                     playerProgress.setVisibility(View.GONE);
                     playerStatus.setText(R.string.player_live);
                     playerStatus.setTextColor(getColor(R.color.carlos_lime));
@@ -460,6 +430,12 @@ public class MainActivity extends Activity implements ChannelAdapter.Listener {
 
             @Override
             public void onPlayerError(PlaybackException error) {
+                if (playingChannel != null) {
+                    unavailableUrls.add(playingChannel.getStreamUrl());
+                    rebuildCategories();
+                    applyFilters();
+                    updateSourceLabel();
+                }
                 playerProgress.setVisibility(View.GONE);
                 playerStatus.setText(R.string.player_error);
                 playerStatus.setTextColor(getColor(R.color.carlos_error));
@@ -475,6 +451,7 @@ public class MainActivity extends Activity implements ChannelAdapter.Listener {
             player.stop();
             player.clearMediaItems();
         }
+        playingChannel = null;
         playerView.setKeepScreenOn(false);
         playerPanel.setVisibility(View.GONE);
     }
@@ -528,6 +505,9 @@ public class MainActivity extends Activity implements ChannelAdapter.Listener {
         ioExecutor.shutdownNow();
         if (adapter != null) {
             adapter.release();
+        }
+        if (healthChecker != null) {
+            healthChecker.shutdown();
         }
         if (player != null) {
             player.release();

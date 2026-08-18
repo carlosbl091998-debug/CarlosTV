@@ -1,10 +1,6 @@
 package com.carlos.tv;
 
-import android.content.ContentResolver;
 import android.content.Context;
-import android.database.Cursor;
-import android.net.Uri;
-import android.provider.OpenableColumns;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -15,16 +11,28 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 public final class PlaylistRepository {
 
-    public static final String DEFAULT_PLAYLIST_URL =
-            "https://iptv-org.github.io/iptv/index.m3u";
+    private static final SourceSpec[] SOURCES = new SourceSpec[]{
+            new SourceSpec(
+                    "M3U.CL México",
+                    "https://www.m3u.cl/lista/MX.m3u",
+                    "m3u_cl_mexico.m3u",
+                    true),
+            new SourceSpec(
+                    "PL Pro",
+                    "http://pl.pro/lista.m3u",
+                    "pl_pro.m3u",
+                    false)
+    };
 
     private static final int MAX_PLAYLIST_BYTES = 30 * 1024 * 1024;
     private static final long CACHE_MAX_AGE_MS = 6L * 60L * 60L * 1000L;
-    private static final String CACHE_FILE_NAME = "iptv_org_channels.m3u";
 
     private final Context context;
     private final M3uParser parser = new M3uParser();
@@ -34,55 +42,82 @@ public final class PlaylistRepository {
     }
 
     public LoadResult loadDefault(boolean forceRefresh) throws IOException {
-        File cacheFile = new File(context.getFilesDir(), CACHE_FILE_NAME);
+        List<Channel> merged = new ArrayList<>();
+        Set<String> seenStreams = new HashSet<>();
+        List<String> loadedSources = new ArrayList<>();
+        List<String> failedSources = new ArrayList<>();
+        int skipped = 0;
+        boolean onlyCache = true;
+
+        for (SourceSpec source : SOURCES) {
+            try {
+                SourceResult sourceResult = loadSource(source, forceRefresh);
+                List<Channel> spanishChannels = SpanishChannelFilter.filterAndNormalize(
+                        sourceResult.channels,
+                        source.assumeSpanish);
+                skipped += sourceResult.skipped;
+                skipped += Math.max(0, sourceResult.channels.size() - spanishChannels.size());
+
+                int beforeMerge = merged.size();
+                for (Channel channel : spanishChannels) {
+                    if (seenStreams.add(channel.getStreamUrl())) {
+                        merged.add(channel);
+                    } else {
+                        skipped++;
+                    }
+                }
+
+                if (merged.size() > beforeMerge) {
+                    loadedSources.add(source.name);
+                    onlyCache &= sourceResult.fromCache;
+                }
+            } catch (IOException sourceError) {
+                failedSources.add(source.name);
+            }
+        }
+
+        if (merged.isEmpty()) {
+            throw new IOException(
+                    "No se pudo cargar ninguna fuente de canales en español. Inténtalo nuevamente.");
+        }
+
+        String sourceName = joinSources(loadedSources);
+        if (!failedSources.isEmpty()) {
+            sourceName += " · " + failedSources.size()
+                    + (failedSources.size() == 1
+                    ? " fuente sin conexión"
+                    : " fuentes sin conexión");
+        }
+
+        return new LoadResult(merged, skipped, sourceName, onlyCache);
+    }
+
+    private SourceResult loadSource(SourceSpec source, boolean forceRefresh) throws IOException {
+        File cacheFile = new File(context.getFilesDir(), source.cacheFileName);
         boolean cacheFresh = cacheFile.isFile()
                 && System.currentTimeMillis() - cacheFile.lastModified() < CACHE_MAX_AGE_MS;
 
         if (!forceRefresh && cacheFresh) {
-            return parseFile(cacheFile, "IPTV-org · guardada", true);
+            return parseFile(cacheFile, true);
         }
 
         try {
-            byte[] bytes = download(DEFAULT_PLAYLIST_URL);
+            byte[] bytes = download(source.url);
             M3uParser.ParseResult parsed = parser.parse(new ByteArrayInputStream(bytes));
             writeCache(cacheFile, bytes);
-            return new LoadResult(
-                    parsed.getChannels(),
-                    parsed.getSkipped(),
-                    "IPTV-org",
-                    false);
+            return new SourceResult(parsed.getChannels(), parsed.getSkipped(), false);
         } catch (IOException networkError) {
             if (cacheFile.isFile()) {
-                return parseFile(cacheFile, "IPTV-org · sin conexión", true);
+                return parseFile(cacheFile, true);
             }
             throw networkError;
         }
     }
 
-    public LoadResult loadFromDocument(Uri uri) throws IOException {
-        ContentResolver resolver = context.getContentResolver();
-        try (InputStream input = resolver.openInputStream(uri)) {
-            if (input == null) {
-                throw new IOException("No se pudo abrir el archivo seleccionado.");
-            }
-            M3uParser.ParseResult parsed = parser.parse(input);
-            return new LoadResult(
-                    parsed.getChannels(),
-                    parsed.getSkipped(),
-                    getDisplayName(resolver, uri),
-                    false);
-        }
-    }
-
-    private LoadResult parseFile(File file, String sourceName, boolean fromCache)
-            throws IOException {
+    private SourceResult parseFile(File file, boolean fromCache) throws IOException {
         try (InputStream input = new FileInputStream(file)) {
             M3uParser.ParseResult parsed = parser.parse(input);
-            return new LoadResult(
-                    parsed.getChannels(),
-                    parsed.getSkipped(),
-                    sourceName,
-                    fromCache);
+            return new SourceResult(parsed.getChannels(), parsed.getSkipped(), fromCache);
         }
     }
 
@@ -90,10 +125,10 @@ public final class PlaylistRepository {
         HttpURLConnection connection = null;
         try {
             connection = (HttpURLConnection) new URL(address).openConnection();
-            connection.setConnectTimeout(12_000);
-            connection.setReadTimeout(25_000);
+            connection.setConnectTimeout(8_000);
+            connection.setReadTimeout(15_000);
             connection.setInstanceFollowRedirects(true);
-            connection.setRequestProperty("User-Agent", "CarlosTV/0.3 Android");
+            connection.setRequestProperty("User-Agent", "CarlosTV/0.4 Android");
             connection.setRequestProperty(
                     "Accept",
                     "application/x-mpegURL, application/vnd.apple.mpegurl, text/plain, */*");
@@ -139,7 +174,7 @@ public final class PlaylistRepository {
                 }
             }
         } catch (IOException ignored) {
-            // La caché es una mejora opcional; la lista descargada sigue siendo utilizable.
+            // La caché es opcional; la lista descargada sigue siendo utilizable.
         } finally {
             if (temporary.exists() && !temporary.equals(cacheFile)) {
                 //noinspection ResultOfMethodCallIgnored
@@ -148,26 +183,45 @@ public final class PlaylistRepository {
         }
     }
 
-    private String getDisplayName(ContentResolver resolver, Uri uri) {
-        try (Cursor cursor = resolver.query(
-                uri,
-                new String[]{OpenableColumns.DISPLAY_NAME},
-                null,
-                null,
-                null)) {
-            if (cursor != null && cursor.moveToFirst()) {
-                int index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
-                if (index >= 0) {
-                    String value = cursor.getString(index);
-                    if (value != null && !value.trim().isEmpty()) {
-                        return value.trim();
-                    }
-                }
+    private static String joinSources(List<String> sources) {
+        StringBuilder joined = new StringBuilder();
+        for (String source : sources) {
+            if (joined.length() > 0) {
+                joined.append(" + ");
             }
-        } catch (RuntimeException ignored) {
-            // Se mostrará un nombre genérico si el proveedor no comparte metadatos.
+            joined.append(source);
         }
-        return "Mi lista M3U";
+        return joined.toString();
+    }
+
+    private static final class SourceSpec {
+        private final String name;
+        private final String url;
+        private final String cacheFileName;
+        private final boolean assumeSpanish;
+
+        private SourceSpec(
+                String name,
+                String url,
+                String cacheFileName,
+                boolean assumeSpanish) {
+            this.name = name;
+            this.url = url;
+            this.cacheFileName = cacheFileName;
+            this.assumeSpanish = assumeSpanish;
+        }
+    }
+
+    private static final class SourceResult {
+        private final List<Channel> channels;
+        private final int skipped;
+        private final boolean fromCache;
+
+        private SourceResult(List<Channel> channels, int skipped, boolean fromCache) {
+            this.channels = channels;
+            this.skipped = skipped;
+            this.fromCache = fromCache;
+        }
     }
 
     public static final class LoadResult {
