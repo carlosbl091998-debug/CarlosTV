@@ -1,18 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="96dp"
-    android:layout_marginStart="14dp"
-    android:layout_marginEnd="14dp"
-    android:layout_marginBottom="10dp"
-    android:background="@drawable/bg_search"
-    android:gravity="center_vertical"
-    android:orientation="horizontal"
-    android:padding="10dp">
+    android:layout_height="230dp"
+    android:layout_margin="6dp"
+    android:background="@drawable/bg_channel_card"
+    android:orientation="vertical"
+    android:padding="8dp">
 
     <FrameLayout
-        android:layout_width="72dp"
-        android:layout_height="76dp"
+        android:layout_width="match_parent"
+        android:layout_height="158dp"
         android:background="@color/carlos_surface_high">
 
         <TextView
@@ -22,7 +19,7 @@
             android:gravity="center"
             android:text="C"
             android:textColor="@color/white"
-            android:textSize="28sp"
+            android:textSize="40sp"
             android:textStyle="bold" />
 
         <ImageView
@@ -31,41 +28,38 @@
             android:layout_height="match_parent"
             android:scaleType="centerCrop"
             android:visibility="gone" />
+
+        <TextView
+            android:layout_width="48dp"
+            android:layout_height="28dp"
+            android:layout_gravity="bottom|end"
+            android:layout_margin="8dp"
+            android:background="@drawable/bg_live_pill"
+            android:gravity="center"
+            android:text="▶"
+            android:textColor="@color/white"
+            android:textSize="14sp"
+            android:textStyle="bold" />
     </FrameLayout>
 
-    <LinearLayout
-        android:layout_width="0dp"
+    <TextView
+        android:id="@+id/program_title"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginStart="12dp"
-        android:layout_weight="1"
-        android:orientation="vertical">
-
-        <TextView
-            android:id="@+id/program_title"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:ellipsize="end"
-            android:maxLines="1"
-            android:textColor="@color/white"
-            android:textSize="16sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:id="@+id/program_meta"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:ellipsize="end"
-            android:maxLines="1"
-            android:textColor="@color/carlos_text_secondary"
-            android:textSize="12sp" />
-    </LinearLayout>
+        android:layout_marginTop="8dp"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textColor="@color/white"
+        android:textSize="14sp"
+        android:textStyle="bold" />
 
     <TextView
-        android:layout_width="wrap_content"
+        android:id="@+id/program_meta"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:padding="8dp"
-        android:text="▶"
-        android:textColor="@color/carlos_accent"
-        android:textSize="22sp" />
+        android:layout_marginTop="3dp"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textColor="@color/carlos_text_secondary"
+        android:textSize="11sp" />
 </LinearLayout>
