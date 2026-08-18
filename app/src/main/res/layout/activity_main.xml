@@ -458,7 +458,6 @@
             android:layout_height="0dp"
             android:layout_weight="1"
             android:background="@color/black"
-            app:controller_auto_show="true"
             app:show_buffering="when_playing"
             app:use_controller="true" />
 
