@@ -18,7 +18,7 @@ import androidx.media3.common.Player;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.ui.PlayerView;
-import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import java.util.ArrayList;
@@ -34,7 +34,7 @@ public class MainActivity extends Activity implements ProgramAdapter.Listener {
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final List<XuperProgram> loaded = new ArrayList<>();
 
-    private XuperCatalogRepository repository;
+    private PublicCatalogRepository repository;
     private ProgramAdapter adapter;
     private EditText searchInput;
     private RecyclerView programList;
@@ -55,13 +55,7 @@ public class MainActivity extends Activity implements ProgramAdapter.Listener {
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
-
-        repository = new XuperCatalogRepository(XuperContract.DEFAULT_BASE_URL);
-        String token = getSharedPreferences("carlos_xuper_session", MODE_PRIVATE).getString("userToken", "");
-        String userId = getSharedPreferences("carlos_xuper_session", MODE_PRIVATE).getString("userId", "");
-        String portalCode = getSharedPreferences("carlos_xuper_session", MODE_PRIVATE).getString("portalCode", "");
-        repository.setSession(token, userId, portalCode);
-
+        repository = new PublicCatalogRepository();
         bindViews();
         configureUi();
         loadSection(Section.HOME);
@@ -83,8 +77,10 @@ public class MainActivity extends Activity implements ProgramAdapter.Listener {
 
     private void configureUi() {
         adapter = new ProgramAdapter(this);
-        programList.setLayoutManager(new LinearLayoutManager(this));
+        int columns = getResources().getConfiguration().screenWidthDp >= 700 ? 4 : 2;
+        programList.setLayoutManager(new GridLayoutManager(this, columns));
         programList.setAdapter(adapter);
+        programList.setHasFixedSize(true);
 
         findViewById(R.id.tab_home).setOnClickListener(v -> loadSection(Section.HOME));
         findViewById(R.id.tab_live).setOnClickListener(v -> loadSection(Section.LIVE));
@@ -105,21 +101,23 @@ public class MainActivity extends Activity implements ProgramAdapter.Listener {
         updateTabs();
         updateSectionHeader();
         loadingPanel.setVisibility(View.VISIBLE);
+        emptyLabel.setVisibility(View.GONE);
         final int current = ++generation;
 
         io.execute(() -> {
             try {
                 List<XuperProgram> result;
-                if (target == Section.LIVE) result = repository.getLiveCatalog();
-                else result = repository.getHomeCatalog();
-                result = filterSection(result, target);
+                if (target == Section.LIVE) result = repository.getLiveMexico();
+                else if (target == Section.MOVIES) result = repository.getMovies();
+                else if (target == Section.SERIES) result = repository.getSeries();
+                else result = repository.getHome();
                 List<XuperProgram> finalResult = result;
                 runOnUiThread(() -> {
                     if (current != generation) return;
                     loaded.clear();
                     loaded.addAll(finalResult);
                     loadingPanel.setVisibility(View.GONE);
-                    sectionStatus.setText(finalResult.size() + " elementos · catálogo del servidor");
+                    sectionStatus.setText(statusFor(target, finalResult.size()));
                     applySearch();
                 });
             } catch (Exception e) {
@@ -129,24 +127,18 @@ public class MainActivity extends Activity implements ProgramAdapter.Listener {
                     adapter.submit(loaded);
                     loadingPanel.setVisibility(View.GONE);
                     emptyLabel.setVisibility(View.VISIBLE);
-                    sectionStatus.setText(repository.hasSession()
-                            ? "No se pudo cargar el catálogo"
-                            : "El servidor puede requerir una sesión autorizada");
-                    Toast.makeText(this, e.getMessage() == null ? "Error de catálogo" : e.getMessage(), Toast.LENGTH_LONG).show();
+                    sectionStatus.setText("No se pudo cargar esta fuente pública");
+                    Toast.makeText(this, e.getMessage() == null ? "Error al cargar catálogo" : e.getMessage(), Toast.LENGTH_LONG).show();
                 });
             }
         });
     }
 
-    private List<XuperProgram> filterSection(List<XuperProgram> source, Section target) {
-        if (target == Section.HOME || target == Section.LIVE) return source;
-        List<XuperProgram> result = new ArrayList<>();
-        for (XuperProgram p : source) {
-            String text = (p.getCategory() + " " + p.getName()).toLowerCase(Locale.ROOT);
-            if (target == Section.MOVIES && (text.contains("movie") || text.contains("film") || text.contains("película") || text.contains("pelicula"))) result.add(p);
-            if (target == Section.SERIES && (text.contains("series") || text.contains("serie") || text.contains("tv show"))) result.add(p);
-        }
-        return result;
+    private String statusFor(Section target, int size) {
+        if (target == Section.LIVE) return size + " señales de México · API JSON pública";
+        if (target == Section.MOVIES) return size + " películas/videos en español · Internet Archive";
+        if (target == Section.SERIES) return size + " episodios/seriales abiertos · Internet Archive";
+        return size + " recomendaciones · fuentes públicas";
     }
 
     private void applySearch() {
@@ -163,10 +155,10 @@ public class MainActivity extends Activity implements ProgramAdapter.Listener {
 
     private void updateSectionHeader() {
         if (section == Section.HOME) sectionTitle.setText("Inicio");
-        else if (section == Section.LIVE) sectionTitle.setText("TV en vivo");
+        else if (section == Section.LIVE) sectionTitle.setText("TV México");
         else if (section == Section.MOVIES) sectionTitle.setText("Películas");
-        else sectionTitle.setText("Series");
-        sectionStatus.setText("Cargando catálogo del servidor…");
+        else sectionTitle.setText("Series y episodios");
+        sectionStatus.setText("Consultando APIs públicas…");
     }
 
     private void updateTabs() {
@@ -184,31 +176,24 @@ public class MainActivity extends Activity implements ProgramAdapter.Listener {
             play(program, media);
             return;
         }
-        if (program.getId().isEmpty()) {
-            Toast.makeText(this, "El servidor no entregó una señal reproducible.", Toast.LENGTH_SHORT).show();
+        if (!program.getId().startsWith("ia:")) {
+            Toast.makeText(this, "No hay una señal compatible para este contenido.", Toast.LENGTH_SHORT).show();
             return;
         }
         loadingPanel.setVisibility(View.VISIBLE);
         io.execute(() -> {
             try {
-                List<XuperProgram> details = repository.getProgram(program.getId());
-                XuperMedia resolved = null;
-                XuperProgram resolvedProgram = program;
-                for (XuperProgram p : details) {
-                    XuperMedia candidate = p.chooseMedia();
-                    if (candidate != null) { resolved = candidate; resolvedProgram = p; break; }
-                }
-                XuperMedia finalMedia = resolved;
-                XuperProgram finalProgram = resolvedProgram;
+                XuperProgram resolvedProgram = repository.resolveArchiveProgram(program);
+                XuperMedia resolved = resolvedProgram.chooseMedia();
                 runOnUiThread(() -> {
                     loadingPanel.setVisibility(View.GONE);
-                    if (finalMedia == null) Toast.makeText(this, "Este contenido requiere autorización o una señal válida.", Toast.LENGTH_LONG).show();
-                    else play(finalProgram, finalMedia);
+                    if (resolved == null) Toast.makeText(this, "Internet Archive no ofrece un archivo de video compatible para este elemento.", Toast.LENGTH_LONG).show();
+                    else play(resolvedProgram, resolved);
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
                     loadingPanel.setVisibility(View.GONE);
-                    Toast.makeText(this, "No se pudo resolver la reproducción.", Toast.LENGTH_LONG).show();
+                    Toast.makeText(this, "No se pudo resolver el archivo de reproducción.", Toast.LENGTH_LONG).show();
                 });
             }
         });
