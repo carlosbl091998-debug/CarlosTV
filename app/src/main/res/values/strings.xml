@@ -18,4 +18,5 @@
     <string name="close_player_description">Cerrar reproductor</string>
     <string name="fullscreen_description">Pantalla completa</string>
     <string name="channel_logo_description">Imagen del contenido</string>
+    <string name="favorite_description">Añadir o quitar de favoritos</string>
 </resources>
