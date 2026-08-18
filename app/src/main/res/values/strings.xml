@@ -1,28 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Carlos TV</string>
-    <string name="app_subtitle">Canales en español · v0.4</string>
+    <string name="app_subtitle">Catálogo y TV · v0.7</string>
     <string name="app_icon_description">Icono de Carlos TV</string>
-    <string name="loading">Cargando y filtrando canales…</string>
-    <string name="connection_error">No se pudieron cargar las fuentes. Revisa tu conexión e inténtalo nuevamente.</string>
+    <string name="loading">Cargando catálogo…</string>
+    <string name="connection_error">No se pudo conectar con el catálogo. Revisa la sesión o la conexión.</string>
     <string name="retry">Reintentar</string>
-    <string name="hero_title">Televisión en español</string>
-    <string name="hero_body">Canales abiertos de México y Latinoamérica en una interfaz limpia.</string>
-    <string name="search_hint">Buscar canal…</string>
-    <string name="source_default">Fuentes: M3U.CL México + PL Pro</string>
-    <string name="source_notice">La app filtra contenido en español y oculta señales que devuelven errores definitivos.</string>
-    <string name="nav_back">Cerrar</string>
+    <string name="search_hint">Buscar en el catálogo…</string>
     <string name="nav_home">Inicio</string>
-    <string name="nav_favorites">Favoritos</string>
-    <string name="nav_refresh">Actualizar</string>
-    <string name="live_badge">ESPAÑOL</string>
-    <string name="no_channels">No encontramos canales con esos filtros.</string>
-    <string name="player_connecting">Conectando con la señal…</string>
-    <string name="player_live">EN VIVO</string>
-    <string name="player_error">Esta señal no está disponible en este momento.</string>
-    <string name="channel_logo_description">Logotipo del canal</string>
-    <string name="favorite_description">Agregar o quitar de favoritos</string>
+    <string name="nav_live">TV</string>
+    <string name="nav_movies">Películas</string>
+    <string name="nav_series">Series</string>
+    <string name="no_channels">No encontramos contenido en esta sección.</string>
+    <string name="player_connecting">Conectando…</string>
+    <string name="player_live">REPRODUCIENDO</string>
+    <string name="player_error">No fue posible reproducir este contenido.</string>
     <string name="close_player_description">Cerrar reproductor</string>
     <string name="fullscreen_description">Pantalla completa</string>
-    <string name="refresh_description">Actualizar lista</string>
 </resources>
