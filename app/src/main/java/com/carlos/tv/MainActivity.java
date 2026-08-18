@@ -35,7 +35,8 @@ public class MainActivity extends Activity implements ProgramAdapter.Listener {
 
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final List<XuperProgram> loaded = new ArrayList<>();
-    private final XtreamClient client = new XtreamClient();
+    private final XtreamClient portalClient = new XtreamClient();
+    private LocalCatalogRepository localCatalog;
 
     private SharedPreferences prefs;
     private ProgramAdapter adapter;
@@ -48,15 +49,18 @@ public class MainActivity extends Activity implements ProgramAdapter.Listener {
     private ExoPlayer player;
     private Section section = Section.HOME;
     private boolean fullscreen;
+    private boolean usePortal;
     private int generation;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
         prefs = getSharedPreferences("carlos_portal", MODE_PRIVATE);
+        localCatalog = new LocalCatalogRepository(this);
         bindViews();
         configureUi();
-        restoreCredentials();
+        restorePortalFields();
+        showLocalCatalog();
     }
 
     private void bindViews() {
@@ -87,8 +91,8 @@ public class MainActivity extends Activity implements ProgramAdapter.Listener {
         programList.setAdapter(adapter);
         programList.setHasFixedSize(true);
 
-        findViewById(R.id.connect_button).setOnClickListener(v -> connect());
-        findViewById(R.id.change_portal_button).setOnClickListener(v -> showLogin());
+        findViewById(R.id.connect_button).setOnClickListener(v -> connectPortal());
+        findViewById(R.id.change_portal_button).setOnClickListener(v -> showPortalSettings());
         findViewById(R.id.tab_home).setOnClickListener(v -> loadSection(Section.HOME));
         findViewById(R.id.tab_live).setOnClickListener(v -> loadSection(Section.LIVE));
         findViewById(R.id.tab_movies).setOnClickListener(v -> loadSection(Section.MOVIES));
@@ -103,23 +107,31 @@ public class MainActivity extends Activity implements ProgramAdapter.Listener {
         });
     }
 
-    private void restoreCredentials() {
+    private void restorePortalFields() {
         serverInput.setText(prefs.getString("server", ""));
         userInput.setText(prefs.getString("username", ""));
         passInput.setText(prefs.getString("password", ""));
-        if (!serverInput.getText().toString().isEmpty() && !userInput.getText().toString().isEmpty()) connect();
-        else showLogin();
     }
 
-    private void showLogin() {
+    private void showLocalCatalog() {
+        generation++;
+        usePortal = false;
+        loginPanel.setVisibility(View.GONE);
+        catalogPanel.setVisibility(View.VISIBLE);
+        loadingPanel.setVisibility(View.GONE);
+        portalBadge.setText("CARLOS TV");
+        section = Section.HOME;
+        loadSection(Section.HOME);
+    }
+
+    private void showPortalSettings() {
         generation++;
         loginPanel.setVisibility(View.VISIBLE);
         catalogPanel.setVisibility(View.GONE);
         loadingPanel.setVisibility(View.GONE);
-        portalBadge.setText("PORTAL");
     }
 
-    private void connect() {
+    private void connectPortal() {
         String server = serverInput.getText().toString().trim();
         String user = userInput.getText().toString().trim();
         String pass = passInput.getText().toString();
@@ -127,58 +139,48 @@ public class MainActivity extends Activity implements ProgramAdapter.Listener {
             Toast.makeText(this, "Escribe servidor, usuario y contraseña.", Toast.LENGTH_SHORT).show();
             return;
         }
-        client.configure(server, user, pass);
+        portalClient.configure(server, user, pass);
         loadingPanel.setVisibility(View.VISIBLE);
         final int current = ++generation;
         io.execute(() -> {
             try {
-                XtreamClient.AuthResult auth = client.authenticate();
+                XtreamClient.AuthResult auth = portalClient.authenticate();
                 runOnUiThread(() -> {
                     if (current != generation) return;
                     loadingPanel.setVisibility(View.GONE);
                     if (!auth.ok) {
                         Toast.makeText(this, auth.status, Toast.LENGTH_LONG).show();
-                        showLogin();
                         return;
                     }
                     prefs.edit().putString("server", server).putString("username", user).putString("password", pass).apply();
+                    usePortal = true;
                     loginPanel.setVisibility(View.GONE);
                     catalogPanel.setVisibility(View.VISIBLE);
-                    portalBadge.setText("CONECTADO");
+                    portalBadge.setText("PORTAL");
                     loadSection(Section.HOME);
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
                     if (current != generation) return;
                     loadingPanel.setVisibility(View.GONE);
-                    Toast.makeText(this, "No se pudo conectar al portal: " + safe(e.getMessage()), Toast.LENGTH_LONG).show();
-                    showLogin();
+                    Toast.makeText(this, "Portal no disponible: " + safe(e.getMessage()) + ". Carlos TV local sigue disponible.", Toast.LENGTH_LONG).show();
                 });
             }
         });
     }
 
     private void loadSection(Section target) {
-        if (!client.isConfigured()) { showLogin(); return; }
         section = target;
         updateTabs();
-        updateHeader("Cargando catálogo del portal…");
+        updateHeader("Cargando contenido…");
         loadingPanel.setVisibility(View.VISIBLE);
         emptyLabel.setVisibility(View.GONE);
         final int current = ++generation;
         io.execute(() -> {
             try {
                 List<XuperProgram> result;
-                if (target == Section.LIVE) result = client.getLive();
-                else if (target == Section.MOVIES) result = client.getMovies();
-                else if (target == Section.SERIES) result = client.getSeries();
-                else {
-                    result = new ArrayList<>();
-                    List<XuperProgram> live = client.getLive();
-                    List<XuperProgram> movies = client.getMovies();
-                    result.addAll(live.subList(0, Math.min(30, live.size())));
-                    result.addAll(movies.subList(0, Math.min(30, movies.size())));
-                }
+                if (usePortal) result = loadPortalSection(target);
+                else result = loadLocalSection(target);
                 List<XuperProgram> finalResult = result;
                 runOnUiThread(() -> {
                     if (current != generation) return;
@@ -195,22 +197,44 @@ public class MainActivity extends Activity implements ProgramAdapter.Listener {
                     loaded.clear();
                     adapter.submit(loaded);
                     emptyLabel.setVisibility(View.VISIBLE);
-                    sectionStatus.setText("Error al consultar el portal");
+                    sectionStatus.setText("No se pudo cargar esta sección");
                     Toast.makeText(this, safe(e.getMessage()), Toast.LENGTH_LONG).show();
                 });
             }
         });
     }
 
+    private List<XuperProgram> loadLocalSection(Section target) throws Exception {
+        if (target == Section.LIVE) return localCatalog.getLive();
+        if (target == Section.MOVIES) return localCatalog.getMovies();
+        if (target == Section.SERIES) return localCatalog.getSeries();
+        return localCatalog.getHome();
+    }
+
+    private List<XuperProgram> loadPortalSection(Section target) throws Exception {
+        if (target == Section.LIVE) return portalClient.getLive();
+        if (target == Section.MOVIES) return portalClient.getMovies();
+        if (target == Section.SERIES) return portalClient.getSeries();
+        List<XuperProgram> result = new ArrayList<>();
+        List<XuperProgram> live = portalClient.getLive();
+        List<XuperProgram> movies = portalClient.getMovies();
+        List<XuperProgram> series = portalClient.getSeries();
+        result.addAll(live.subList(0, Math.min(12, live.size())));
+        result.addAll(movies.subList(0, Math.min(12, movies.size())));
+        result.addAll(series.subList(0, Math.min(8, series.size())));
+        return result;
+    }
+
     private String statusFor(Section target, int size) {
-        if (target == Section.LIVE) return size + " canales del portal";
-        if (target == Section.MOVIES) return size + " películas / VOD";
-        if (target == Section.SERIES) return size + " series";
-        return size + " contenidos destacados";
+        String source = usePortal ? "portal" : "biblioteca Carlos TV";
+        if (target == Section.LIVE) return size + " canales · " + source;
+        if (target == Section.MOVIES) return size + " películas / VOD · " + source;
+        if (target == Section.SERIES) return size + " episodios y series · " + source;
+        return size + " contenidos destacados · " + source;
     }
 
     private void updateHeader(String status) {
-        if (section == Section.HOME) sectionTitle.setText("Inicio");
+        if (section == Section.HOME) sectionTitle.setText("Para ti");
         else if (section == Section.LIVE) sectionTitle.setText("TV en vivo");
         else if (section == Section.MOVIES) sectionTitle.setText("Películas");
         else sectionTitle.setText("Series");
@@ -230,7 +254,7 @@ public class MainActivity extends Activity implements ProgramAdapter.Listener {
         String q = searchInput.getText().toString().trim().toLowerCase(Locale.ROOT);
         List<XuperProgram> visible = new ArrayList<>();
         for (XuperProgram p : loaded) {
-            String h = (p.getName() + " " + p.getCategory()).toLowerCase(Locale.ROOT);
+            String h = (p.getName() + " " + p.getCategory() + " " + p.getCountry()).toLowerCase(Locale.ROOT);
             if (q.isEmpty() || h.contains(q)) visible.add(p);
         }
         adapter.submit(visible);
@@ -241,33 +265,33 @@ public class MainActivity extends Activity implements ProgramAdapter.Listener {
     @Override public void onProgramSelected(XuperProgram program) {
         XuperMedia media = program.chooseMedia();
         if (media != null) { play(program, media); return; }
-        if (!program.getId().startsWith("series:")) {
-            Toast.makeText(this, "No hay una señal reproducible.", Toast.LENGTH_SHORT).show();
+        if (usePortal && program.getId().startsWith("series:")) {
+            loadingPanel.setVisibility(View.VISIBLE);
+            io.execute(() -> {
+                try {
+                    XuperProgram resolved = portalClient.resolveSeriesFirstEpisode(program);
+                    XuperMedia m = resolved.chooseMedia();
+                    runOnUiThread(() -> {
+                        loadingPanel.setVisibility(View.GONE);
+                        if (m == null) Toast.makeText(this, "La serie no devolvió episodios reproducibles.", Toast.LENGTH_LONG).show();
+                        else play(resolved, m);
+                    });
+                } catch (Exception e) {
+                    runOnUiThread(() -> {
+                        loadingPanel.setVisibility(View.GONE);
+                        Toast.makeText(this, "No se pudo abrir la serie.", Toast.LENGTH_LONG).show();
+                    });
+                }
+            });
             return;
         }
-        loadingPanel.setVisibility(View.VISIBLE);
-        io.execute(() -> {
-            try {
-                XuperProgram resolved = client.resolveSeriesFirstEpisode(program);
-                XuperMedia m = resolved.chooseMedia();
-                runOnUiThread(() -> {
-                    loadingPanel.setVisibility(View.GONE);
-                    if (m == null) Toast.makeText(this, "La serie no devolvió episodios reproducibles.", Toast.LENGTH_LONG).show();
-                    else play(resolved, m);
-                });
-            } catch (Exception e) {
-                runOnUiThread(() -> {
-                    loadingPanel.setVisibility(View.GONE);
-                    Toast.makeText(this, "No se pudo abrir la serie.", Toast.LENGTH_LONG).show();
-                });
-            }
-        });
+        Toast.makeText(this, "No hay una señal reproducible.", Toast.LENGTH_SHORT).show();
     }
 
     private void play(XuperProgram program, XuperMedia media) {
         ensurePlayer();
         playerTitle.setText(program.getName());
-        playerStatus.setText("Conectando al stream…");
+        playerStatus.setText("Conectando…");
         playerStatus.setTextColor(getColor(R.color.carlos_text_secondary));
         playerPanel.setVisibility(View.VISIBLE);
         MediaItem.Builder item = new MediaItem.Builder().setUri(media.getUrl());
@@ -294,7 +318,7 @@ public class MainActivity extends Activity implements ProgramAdapter.Listener {
                 }
             }
             @Override public void onPlayerError(PlaybackException error) {
-                playerStatus.setText("El stream no respondió o requiere otro formato.");
+                playerStatus.setText("Esta fuente no respondió. Prueba otro contenido.");
                 playerStatus.setTextColor(getColor(R.color.carlos_error));
             }
         });
@@ -328,7 +352,7 @@ public class MainActivity extends Activity implements ProgramAdapter.Listener {
     @Override public void onBackPressed() {
         if (fullscreen) exitFullscreen();
         else if (playerPanel.getVisibility() == View.VISIBLE) closePlayer();
-        else if (catalogPanel.getVisibility() == View.VISIBLE) showLogin();
+        else if (loginPanel.getVisibility() == View.VISIBLE) showLocalCatalog();
         else super.onBackPressed();
     }
 
