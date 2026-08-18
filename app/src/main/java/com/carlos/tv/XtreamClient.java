@@ -16,31 +16,70 @@ import java.util.List;
 
 public final class XtreamClient {
     private String baseUrl = "";
+    private String rawServer = "";
     private String username = "";
     private String password = "";
 
     public void configure(String server, String user, String pass) {
         String s = server == null ? "" : server.trim();
-        if (!s.startsWith("http://") && !s.startsWith("https://")) s = "http://" + s;
         while (s.endsWith("/")) s = s.substring(0, s.length() - 1);
-        baseUrl = s;
+        rawServer = s;
+        baseUrl = normalizePreferred(s);
         username = user == null ? "" : user.trim();
         password = pass == null ? "" : pass;
     }
 
     public boolean isConfigured() {
-        return !baseUrl.isEmpty() && !username.isEmpty() && !password.isEmpty();
+        return !rawServer.isEmpty() && !username.isEmpty() && !password.isEmpty();
     }
 
     public AuthResult authenticate() throws Exception {
-        JSONObject root = new JSONObject(get(apiUrl(null)));
-        JSONObject userInfo = root.optJSONObject("user_info");
-        JSONObject serverInfo = root.optJSONObject("server_info");
-        boolean ok = userInfo != null && "1".equals(String.valueOf(userInfo.opt("auth")));
-        if (!ok) return new AuthResult(false, "Acceso rechazado por el servidor", "");
-        String status = userInfo.optString("status", "Active");
-        String serverName = serverInfo == null ? "" : serverInfo.optString("url", "");
-        return new AuthResult(true, status, serverName);
+        if (!isConfigured()) return new AuthResult(false, "Faltan datos del portal", "");
+
+        List<String> candidates = candidateBases(rawServer);
+        StringBuilder diagnostics = new StringBuilder();
+
+        for (String candidate : candidates) {
+            HttpResult response;
+            try {
+                response = request(apiUrlFor(candidate, null));
+            } catch (Exception e) {
+                appendDiagnostic(diagnostics, candidate, e.getClass().getSimpleName());
+                continue;
+            }
+
+            if (response.code == 401 || response.code == 403) {
+                return new AuthResult(false, "El servidor rechazó las credenciales (HTTP " + response.code + ")", candidate);
+            }
+            if (response.code < 200 || response.code >= 300) {
+                appendDiagnostic(diagnostics, candidate, "HTTP " + response.code);
+                continue;
+            }
+
+            try {
+                JSONObject root = new JSONObject(response.body);
+                JSONObject userInfo = root.optJSONObject("user_info");
+                JSONObject serverInfo = root.optJSONObject("server_info");
+                if (userInfo == null) {
+                    appendDiagnostic(diagnostics, candidate, "respuesta sin user_info");
+                    continue;
+                }
+
+                boolean ok = "1".equals(String.valueOf(userInfo.opt("auth")));
+                if (!ok) {
+                    return new AuthResult(false, "Acceso rechazado por el portal", candidate);
+                }
+
+                baseUrl = candidate;
+                String status = userInfo.optString("status", "Active");
+                String serverName = serverInfo == null ? candidate : serverInfo.optString("url", candidate);
+                return new AuthResult(true, status + " · " + candidate, serverName);
+            } catch (Exception jsonError) {
+                appendDiagnostic(diagnostics, candidate, "respuesta no JSON");
+            }
+        }
+
+        throw new IllegalStateException("No encontramos un endpoint Xtream estándar. " + diagnostics);
     }
 
     public List<XuperProgram> getLive() throws Exception {
@@ -123,7 +162,11 @@ public final class XtreamClient {
     }
 
     private String apiUrl(String action) throws Exception {
-        String url = baseUrl + "/player_api.php?username=" + enc(username) + "&password=" + enc(password);
+        return apiUrlFor(baseUrl, action);
+    }
+
+    private String apiUrlFor(String base, String action) throws Exception {
+        String url = base + "/player_api.php?username=" + enc(username) + "&password=" + enc(password);
         if (action != null && !action.isEmpty()) url += "&action=" + enc(action);
         return url;
     }
@@ -133,23 +176,60 @@ public final class XtreamClient {
     }
 
     private String get(String url) throws Exception {
+        HttpResult response = request(url);
+        if (response.code < 200 || response.code >= 300) {
+            throw new IllegalStateException("HTTP " + response.code);
+        }
+        return response.body;
+    }
+
+    private HttpResult request(String url) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+        c.setInstanceFollowRedirects(true);
         c.setConnectTimeout(12000);
         c.setReadTimeout(20000);
         c.setRequestMethod("GET");
-        c.setRequestProperty("Accept", "application/json");
-        c.setRequestProperty("User-Agent", "CarlosTV/1.0 Android");
+        c.setRequestProperty("Accept", "application/json, text/plain, */*");
+        c.setRequestProperty("User-Agent", "CarlosTV/1.0.1 Android");
         int code = c.getResponseCode();
         InputStream in = code >= 200 && code < 300 ? c.getInputStream() : c.getErrorStream();
-        if (in == null) throw new IllegalStateException("HTTP " + code);
-        BufferedReader r = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
-        StringBuilder b = new StringBuilder();
-        String line;
-        while ((line = r.readLine()) != null) b.append(line);
-        r.close();
+        String body = "";
+        if (in != null) {
+            BufferedReader r = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
+            StringBuilder b = new StringBuilder();
+            String line;
+            while ((line = r.readLine()) != null) b.append(line);
+            r.close();
+            body = b.toString();
+        }
         c.disconnect();
-        if (code < 200 || code >= 300) throw new IllegalStateException("HTTP " + code);
-        return b.toString();
+        return new HttpResult(code, body);
+    }
+
+    private static List<String> candidateBases(String raw) {
+        List<String> out = new ArrayList<>();
+        String s = raw == null ? "" : raw.trim();
+        while (s.endsWith("/")) s = s.substring(0, s.length() - 1);
+        if (s.startsWith("https://") || s.startsWith("http://")) {
+            out.add(s);
+            return out;
+        }
+        out.add("https://" + s);
+        out.add("http://" + s);
+        return out;
+    }
+
+    private static String normalizePreferred(String raw) {
+        if (raw == null || raw.trim().isEmpty()) return "";
+        String s = raw.trim();
+        while (s.endsWith("/")) s = s.substring(0, s.length() - 1);
+        if (s.startsWith("https://") || s.startsWith("http://")) return s;
+        return "https://" + s;
+    }
+
+    private static void appendDiagnostic(StringBuilder diagnostics, String candidate, String message) {
+        if (diagnostics.length() > 0) diagnostics.append(" | ");
+        diagnostics.append(candidate).append(": ").append(message);
     }
 
     private static String enc(String s) throws Exception {
@@ -178,12 +258,23 @@ public final class XtreamClient {
         return keys;
     }
 
+    private static final class HttpResult {
+        final int code;
+        final String body;
+        HttpResult(int code, String body) {
+            this.code = code;
+            this.body = body == null ? "" : body;
+        }
+    }
+
     public static final class AuthResult {
         public final boolean ok;
         public final String status;
         public final String serverName;
         public AuthResult(boolean ok, String status, String serverName) {
-            this.ok = ok; this.status = status; this.serverName = serverName;
+            this.ok = ok;
+            this.status = status;
+            this.serverName = serverName;
         }
     }
 }
