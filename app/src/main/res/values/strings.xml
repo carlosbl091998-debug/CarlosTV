@@ -17,4 +17,5 @@
     <string name="player_error">No fue posible reproducir este contenido.</string>
     <string name="close_player_description">Cerrar reproductor</string>
     <string name="fullscreen_description">Pantalla completa</string>
+    <string name="channel_logo_description">Imagen del contenido</string>
 </resources>
