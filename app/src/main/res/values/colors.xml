@@ -1,14 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="black">#FF000000</color>
-    <color name="carlos_background">#FF070B12</color>
-    <color name="carlos_surface">#FF101826</color>
-    <color name="carlos_surface_high">#FF172337</color>
-    <color name="carlos_border">#FF24354E</color>
-    <color name="carlos_blue">#FF10B7FF</color>
-    <color name="carlos_blue_dark">#FF071426</color>
-    <color name="carlos_lime">#FFA8FF1A</color>
-    <color name="carlos_text_secondary">#FF96A4B8</color>
-    <color name="carlos_error">#FFFF6070</color>
+    <color name="carlos_background">#FF090909</color>
+    <color name="carlos_surface">#FF151515</color>
+    <color name="carlos_surface_high">#FF202020</color>
+    <color name="carlos_border">#FF343434</color>
+    <color name="carlos_blue">#FFFF6A2A</color>
+    <color name="carlos_blue_dark">#FF101010</color>
+    <color name="carlos_lime">#FFFF5A1F</color>
+    <color name="carlos_accent">#FFFF5A1F</color>
+    <color name="carlos_accent_dark">#FFCC3C0A</color>
+    <color name="carlos_text_secondary">#FFA4A4A4</color>
+    <color name="carlos_error">#FFFF5D67</color>
     <color name="white">#FFFFFFFF</color>
 </resources>
