@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Carlos TV</string>
-    <string name="app_subtitle">Catálogo y TV · v0.7</string>
+    <string name="app_subtitle">TV México + catálogo abierto · v0.8</string>
     <string name="app_icon_description">Icono de Carlos TV</string>
-    <string name="loading">Cargando catálogo…</string>
-    <string name="connection_error">No se pudo conectar con el catálogo. Revisa la sesión o la conexión.</string>
+    <string name="loading">Consultando APIs públicas…</string>
+    <string name="connection_error">No se pudo conectar con la fuente pública.</string>
     <string name="retry">Reintentar</string>
-    <string name="search_hint">Buscar en el catálogo…</string>
+    <string name="search_hint">Buscar canal, película o episodio…</string>
     <string name="nav_home">Inicio</string>
     <string name="nav_live">TV</string>
     <string name="nav_movies">Películas</string>
