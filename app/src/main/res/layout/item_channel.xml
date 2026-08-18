@@ -1,22 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="82dp"
-    android:layout_marginBottom="9dp"
+    android:layout_height="168dp"
+    android:layout_margin="6dp"
     android:background="@drawable/bg_channel_card"
     android:clickable="true"
     android:focusable="true"
     android:foreground="?android:attr/selectableItemBackground"
-    android:gravity="center_vertical"
-    android:orientation="horizontal"
-    android:paddingStart="12dp"
-    android:paddingEnd="8dp">
+    android:orientation="vertical"
+    android:padding="10dp">
 
     <FrameLayout
-        android:layout_width="56dp"
-        android:layout_height="56dp"
+        android:layout_width="match_parent"
+        android:layout_height="92dp"
         android:background="@drawable/bg_logo_tile"
-        android:padding="6dp">
+        android:padding="12dp">
 
         <TextView
             android:id="@+id/channel_initial"
@@ -24,8 +22,8 @@
             android:layout_height="match_parent"
             android:gravity="center"
             android:text="TV"
-            android:textColor="@color/carlos_blue"
-            android:textSize="19sp"
+            android:textColor="@color/carlos_accent"
+            android:textSize="28sp"
             android:textStyle="bold" />
 
         <ImageView
@@ -35,56 +33,57 @@
             android:contentDescription="@string/channel_logo_description"
             android:scaleType="centerInside"
             android:visibility="gone" />
-    </FrameLayout>
-
-    <LinearLayout
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_marginStart="13dp"
-        android:layout_weight="1"
-        android:orientation="vertical">
 
         <TextView
-            android:id="@+id/channel_name"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:ellipsize="end"
-            android:maxLines="1"
+            android:id="@+id/channel_favorite"
+            android:layout_width="38dp"
+            android:layout_height="38dp"
+            android:layout_gravity="top|end"
+            android:gravity="center"
+            android:text="☆"
+            android:textColor="@color/carlos_text_secondary"
+            android:textSize="25sp" />
+    </FrameLayout>
+
+    <TextView
+        android:id="@+id/channel_name"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textColor="@color/white"
+        android:textSize="14sp"
+        android:textStyle="bold" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="5dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="20dp"
+            android:background="@drawable/bg_live_pill"
+            android:gravity="center"
+            android:paddingStart="7dp"
+            android:paddingEnd="7dp"
+            android:text="EN VIVO"
             android:textColor="@color/white"
-            android:textSize="15sp"
+            android:textSize="8sp"
             android:textStyle="bold" />
 
         <TextView
             android:id="@+id/channel_metadata"
-            android:layout_width="match_parent"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginTop="5dp"
+            android:layout_marginStart="7dp"
+            android:layout_weight="1"
             android:ellipsize="end"
             android:maxLines="1"
             android:textColor="@color/carlos_text_secondary"
-            android:textSize="11sp" />
+            android:textSize="10sp" />
     </LinearLayout>
-
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="24dp"
-        android:layout_marginStart="8dp"
-        android:background="@drawable/bg_live_pill"
-        android:gravity="center"
-        android:paddingStart="8dp"
-        android:paddingEnd="8dp"
-        android:text="@string/player_live"
-        android:textColor="@color/carlos_background"
-        android:textSize="8sp"
-        android:textStyle="bold" />
-
-    <TextView
-        android:id="@+id/channel_favorite"
-        android:layout_width="46dp"
-        android:layout_height="match_parent"
-        android:gravity="center"
-        android:text="☆"
-        android:textColor="@color/carlos_text_secondary"
-        android:textSize="27sp" />
-
 </LinearLayout>
