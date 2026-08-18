@@ -6,116 +6,23 @@
     android:background="@color/carlos_background">
 
     <LinearLayout
-        android:id="@+id/login_panel"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:orientation="vertical"
-        android:gravity="center"
-        android:padding="26dp">
-
-        <ImageView
-            android:layout_width="86dp"
-            android:layout_height="86dp"
-            android:src="@drawable/logo_carlos_tv"
-            android:contentDescription="@string/app_icon_description" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
-            android:text="Carlos TV"
-            android:textColor="@color/white"
-            android:textSize="30sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:text="Conecta tu portal de TV"
-            android:textColor="@color/carlos_text_secondary"
-            android:textSize="14sp" />
-
-        <EditText
-            android:id="@+id/server_input"
-            android:layout_width="match_parent"
-            android:layout_height="52dp"
-            android:layout_marginTop="26dp"
-            android:background="@drawable/bg_search"
-            android:hint="Servidor  ·  ejemplo.com:8080"
-            android:paddingStart="16dp"
-            android:paddingEnd="16dp"
-            android:singleLine="true"
-            android:textColor="@color/white"
-            android:textColorHint="@color/carlos_text_secondary" />
-
-        <EditText
-            android:id="@+id/user_input"
-            android:layout_width="match_parent"
-            android:layout_height="52dp"
-            android:layout_marginTop="10dp"
-            android:background="@drawable/bg_search"
-            android:hint="Usuario"
-            android:paddingStart="16dp"
-            android:paddingEnd="16dp"
-            android:singleLine="true"
-            android:textColor="@color/white"
-            android:textColorHint="@color/carlos_text_secondary" />
-
-        <EditText
-            android:id="@+id/pass_input"
-            android:layout_width="match_parent"
-            android:layout_height="52dp"
-            android:layout_marginTop="10dp"
-            android:background="@drawable/bg_search"
-            android:hint="Contraseña"
-            android:paddingStart="16dp"
-            android:paddingEnd="16dp"
-            android:singleLine="true"
-            android:textColor="@color/white"
-            android:textColorHint="@color/carlos_text_secondary" />
-
-        <TextView
-            android:id="@+id/connect_button"
-            android:layout_width="match_parent"
-            android:layout_height="54dp"
-            android:layout_marginTop="18dp"
-            android:background="@drawable/bg_live_pill"
-            android:gravity="center"
-            android:text="CONECTAR PORTAL"
-            android:textColor="@color/white"
-            android:textSize="14sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:gravity="center"
-            android:text="Compatible con portales Xtream Codes autorizados"
-            android:textColor="@color/carlos_text_secondary"
-            android:textSize="11sp" />
-    </LinearLayout>
-
-    <LinearLayout
         android:id="@+id/catalog_panel"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:orientation="vertical"
-        android:visibility="gone">
+        android:orientation="vertical">
 
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="66dp"
+            android:layout_height="64dp"
             android:gravity="center_vertical"
             android:orientation="horizontal"
             android:paddingStart="14dp"
-            android:paddingEnd="10dp"
+            android:paddingEnd="8dp"
             android:background="@color/carlos_blue_dark">
 
             <ImageView
-                android:layout_width="44dp"
-                android:layout_height="44dp"
+                android:layout_width="42dp"
+                android:layout_height="42dp"
                 android:src="@drawable/logo_carlos_tv"
                 android:contentDescription="@string/app_icon_description" />
 
@@ -125,18 +32,18 @@
                 android:layout_marginStart="10dp"
                 android:layout_weight="1"
                 android:orientation="vertical">
-                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Carlos TV" android:textColor="@color/white" android:textSize="20sp" android:textStyle="bold" />
-                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Portal · v1.0" android:textColor="@color/carlos_text_secondary" android:textSize="11sp" />
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Carlos TV" android:textColor="@color/white" android:textSize="21sp" android:textStyle="bold" />
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Xperience · v1.1" android:textColor="@color/carlos_text_secondary" android:textSize="10sp" />
             </LinearLayout>
 
             <TextView
                 android:id="@+id/portal_badge"
                 android:layout_width="wrap_content"
-                android:layout_height="30dp"
+                android:layout_height="28dp"
                 android:gravity="center"
                 android:paddingStart="10dp"
                 android:paddingEnd="10dp"
-                android:text="PORTAL"
+                android:text="CARLOS TV"
                 android:textColor="@color/white"
                 android:textSize="9sp"
                 android:textStyle="bold"
@@ -144,21 +51,49 @@
 
             <TextView
                 android:id="@+id/change_portal_button"
-                android:layout_width="46dp"
-                android:layout_height="46dp"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
                 android:gravity="center"
                 android:text="⚙"
                 android:textColor="@color/white"
-                android:textSize="22sp" />
+                android:textSize="21sp" />
         </LinearLayout>
 
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="54dp"
+            android:layout_height="124dp"
+            android:layout_marginStart="12dp"
+            android:layout_marginTop="10dp"
+            android:layout_marginEnd="12dp"
+            android:background="@drawable/bg_channel_card"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:padding="16dp">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="CARLOS TV" android:textColor="@color/carlos_accent" android:textSize="11sp" android:textStyle="bold" />
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="5dp" android:text="Todo en un solo lugar" android:textColor="@color/white" android:textSize="24sp" android:textStyle="bold" />
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="TV mexicana, películas y series de prueba." android:textColor="@color/carlos_text_secondary" android:textSize="12sp" />
+            </LinearLayout>
+
+            <ImageView
+                android:layout_width="74dp"
+                android:layout_height="74dp"
+                android:src="@drawable/logo_carlos_tv"
+                android:contentDescription="@string/app_icon_description" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="50dp"
             android:orientation="horizontal"
             android:gravity="center"
-            android:paddingStart="8dp"
-            android:paddingEnd="8dp">
+            android:paddingStart="6dp"
+            android:paddingEnd="6dp">
             <TextView android:id="@+id/tab_home" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:gravity="center" android:text="Inicio" android:textColor="@color/carlos_accent" android:textStyle="bold" />
             <TextView android:id="@+id/tab_live" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:gravity="center" android:text="TV" android:textColor="@color/carlos_text_secondary" android:textStyle="bold" />
             <TextView android:id="@+id/tab_movies" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:gravity="center" android:text="Películas" android:textColor="@color/carlos_text_secondary" android:textStyle="bold" />
@@ -169,24 +104,24 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:paddingStart="16dp"
-            android:paddingEnd="16dp"
-            android:paddingBottom="8dp">
-            <TextView android:id="@+id/section_title" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Inicio" android:textColor="@color/white" android:textSize="24sp" android:textStyle="bold" />
-            <TextView android:id="@+id/section_status" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="3dp" android:text="Catálogo del portal" android:textColor="@color/carlos_text_secondary" android:textSize="12sp" />
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:paddingBottom="7dp">
+            <TextView android:id="@+id/section_title" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Para ti" android:textColor="@color/white" android:textSize="22sp" android:textStyle="bold" />
+            <TextView android:id="@+id/section_status" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:text="Cargando biblioteca Carlos TV…" android:textColor="@color/carlos_text_secondary" android:textSize="11sp" />
         </LinearLayout>
 
         <EditText
             android:id="@+id/search_input"
             android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginStart="14dp"
-            android:layout_marginEnd="14dp"
-            android:layout_marginBottom="10dp"
+            android:layout_height="46dp"
+            android:layout_marginStart="12dp"
+            android:layout_marginEnd="12dp"
+            android:layout_marginBottom="8dp"
             android:background="@drawable/bg_search"
-            android:hint="Buscar en el catálogo…"
-            android:paddingStart="16dp"
-            android:paddingEnd="16dp"
+            android:hint="Buscar canales, películas o series…"
+            android:paddingStart="15dp"
+            android:paddingEnd="15dp"
             android:singleLine="true"
             android:textColor="@color/white"
             android:textColorHint="@color/carlos_text_secondary" />
@@ -202,7 +137,7 @@
                 android:clipToPadding="false"
                 android:paddingStart="6dp"
                 android:paddingEnd="6dp"
-                android:paddingBottom="16dp" />
+                android:paddingBottom="18dp" />
             <TextView
                 android:id="@+id/empty_label"
                 android:layout_width="match_parent"
@@ -216,6 +151,25 @@
     </LinearLayout>
 
     <LinearLayout
+        android:id="@+id/login_panel"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:padding="26dp"
+        android:background="@color/carlos_background"
+        android:visibility="gone">
+        <ImageView android:layout_width="76dp" android:layout_height="76dp" android:src="@drawable/logo_carlos_tv" android:contentDescription="@string/app_icon_description" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="Portal opcional" android:textColor="@color/white" android:textSize="27sp" android:textStyle="bold" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="Conecta un Xtream autorizado si lo tienes" android:textColor="@color/carlos_text_secondary" android:textSize="13sp" />
+        <EditText android:id="@+id/server_input" android:layout_width="match_parent" android:layout_height="52dp" android:layout_marginTop="24dp" android:background="@drawable/bg_search" android:hint="Servidor" android:paddingStart="16dp" android:paddingEnd="16dp" android:singleLine="true" android:textColor="@color/white" android:textColorHint="@color/carlos_text_secondary" />
+        <EditText android:id="@+id/user_input" android:layout_width="match_parent" android:layout_height="52dp" android:layout_marginTop="10dp" android:background="@drawable/bg_search" android:hint="Usuario" android:paddingStart="16dp" android:paddingEnd="16dp" android:singleLine="true" android:textColor="@color/white" android:textColorHint="@color/carlos_text_secondary" />
+        <EditText android:id="@+id/pass_input" android:layout_width="match_parent" android:layout_height="52dp" android:layout_marginTop="10dp" android:background="@drawable/bg_search" android:hint="Contraseña" android:paddingStart="16dp" android:paddingEnd="16dp" android:singleLine="true" android:textColor="@color/white" android:textColorHint="@color/carlos_text_secondary" />
+        <TextView android:id="@+id/connect_button" android:layout_width="match_parent" android:layout_height="54dp" android:layout_marginTop="18dp" android:background="@drawable/bg_live_pill" android:gravity="center" android:text="CONECTAR PORTAL" android:textColor="@color/white" android:textSize="14sp" android:textStyle="bold" />
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:gravity="center" android:text="Pulsa Atrás para regresar a Carlos TV" android:textColor="@color/carlos_text_secondary" android:textSize="11sp" />
+    </LinearLayout>
+
+    <LinearLayout
         android:id="@+id/loading_panel"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
@@ -224,7 +178,7 @@
         android:background="#E6090909"
         android:visibility="gone">
         <ProgressBar android:layout_width="48dp" android:layout_height="48dp" android:indeterminateTint="@color/carlos_accent" />
-        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="Conectando con el portal…" android:textColor="@color/white" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="Cargando Carlos TV…" android:textColor="@color/white" />
     </LinearLayout>
 
     <LinearLayout
