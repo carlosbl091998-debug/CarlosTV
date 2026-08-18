@@ -1,7 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Carlos TV</string>
-    <string name="loading">Cargando…</string>
+    <string name="app_subtitle">Fútbol en vivo · v0.2</string>
+    <string name="app_icon_description">Icono de Carlos TV</string>
+    <string name="loading">Preparando Carlos TV…</string>
     <string name="connection_error">No se pudo abrir la página. Revisa tu conexión a internet.</string>
     <string name="retry">Reintentar</string>
+    <string name="nav_back">Atrás</string>
+    <string name="nav_home">Inicio</string>
+    <string name="nav_refresh">Recargar</string>
 </resources>

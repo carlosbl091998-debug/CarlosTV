@@ -14,45 +14,119 @@ import android.webkit.CookieManager;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 import android.widget.ProgressBar;
 
+import java.io.ByteArrayInputStream;
+import java.util.Locale;
+
 public class MainActivity extends Activity {
 
     private static final String START_URL = "https://rojadirectaa.net/";
 
-    private FrameLayout root;
+    private static final String[] BLOCKED_AD_HOSTS = {
+            "doubleclick.net",
+            "googlesyndication.com",
+            "googleadservices.com",
+            "adservice.google.com",
+            "popads.net",
+            "popcash.net",
+            "propellerads.com",
+            "adsterra.com",
+            "exoclick.com",
+            "trafficjunky.net",
+            "onclicka.com",
+            "onclkds.com",
+            "monetag.com",
+            "highperformanceformat.com",
+            "highperformancedisplayformat.com",
+            "histats.com",
+            "juicysads.com",
+            "revcontent.com",
+            "taboola.com",
+            "outbrain.com"
+    };
+
+    private static final String PAGE_GUARD_JS =
+            "(function(){"
+                    + "if(window.__carlosTvGuardInstalled){return;}"
+                    + "window.__carlosTvGuardInstalled=true;"
+                    + "try{Object.defineProperty(window,'open',{value:function(){return null;},writable:false,configurable:false});}"
+                    + "catch(e){window.open=function(){return null;};}"
+                    + "var blocked=['doubleclick.net','googlesyndication.com','googleadservices.com','popads.net','popcash.net','propellerads.com','adsterra.com','exoclick.com','trafficjunky.net','onclkds.com','monetag.com','highperformanceformat.com','highperformancedisplayformat.com'];"
+                    + "function isBlocked(value){value=(value||'').toLowerCase();return blocked.some(function(item){return value.indexOf(item)!==-1;});}"
+                    + "function clean(root){"
+                    + "var area=(root&&root.querySelectorAll)?root:document;"
+                    + "area.querySelectorAll('a[target]').forEach(function(a){a.setAttribute('target','_self');});"
+                    + "area.querySelectorAll('script[src],iframe[src],a[href]').forEach(function(el){"
+                    + "var value=el.getAttribute('src')||el.getAttribute('href')||'';"
+                    + "if(isBlocked(value)){if(el.tagName==='A'){el.removeAttribute('href');el.style.display='none';}else{el.remove();}}"
+                    + "});}"
+                    + "var style=document.createElement('style');"
+                    + "style.textContent='.adsbygoogle,[id^=google_ads],[class*=popunder],[class*=interstitial-ad]{display:none!important;}';"
+                    + "(document.head||document.documentElement).appendChild(style);"
+                    + "clean(document);"
+                    + "new MutationObserver(function(items){items.forEach(function(item){item.addedNodes.forEach(function(node){if(node.nodeType===1){clean(node);}});});})"
+                    + ".observe(document.documentElement,{childList:true,subtree:true});"
+                    + "})();";
+
+    private FrameLayout fullscreenContainer;
     private WebView webView;
     private ProgressBar progress;
+    private View chromeContainer;
+    private View loadingPanel;
     private View errorPanel;
+    private View backButton;
     private View customView;
     private WebChromeClient.CustomViewCallback customViewCallback;
     private int originalOrientation;
+    private boolean firstPageLoaded;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        root = findViewById(R.id.root);
+        fullscreenContainer = findViewById(R.id.fullscreen_container);
+        chromeContainer = findViewById(R.id.chrome_container);
         webView = findViewById(R.id.web_view);
         progress = findViewById(R.id.progress);
+        loadingPanel = findViewById(R.id.loading_panel);
         errorPanel = findViewById(R.id.error_panel);
+        backButton = findViewById(R.id.back_button);
 
         configureWebView();
-        findViewById(R.id.retry_button).setOnClickListener(v -> {
-            errorPanel.setVisibility(View.GONE);
-            webView.loadUrl(START_URL);
-        });
+        configureNativeControls();
 
-        if (savedInstanceState == null) {
+        if (savedInstanceState == null || webView.restoreState(savedInstanceState) == null) {
             webView.loadUrl(START_URL);
         } else {
-            webView.restoreState(savedInstanceState);
+            firstPageLoaded = true;
+            loadingPanel.setVisibility(View.GONE);
+            updateBackButton();
         }
+    }
+
+    private void configureNativeControls() {
+        backButton.setOnClickListener(v -> {
+            if (webView.canGoBack()) {
+                webView.goBack();
+            } else {
+                webView.loadUrl(START_URL);
+            }
+        });
+
+        findViewById(R.id.home_button).setOnClickListener(v -> webView.loadUrl(START_URL));
+        findViewById(R.id.refresh_button).setOnClickListener(v -> webView.reload());
+        findViewById(R.id.retry_button).setOnClickListener(v -> {
+            errorPanel.setVisibility(View.GONE);
+            loadingPanel.setVisibility(View.VISIBLE);
+            webView.loadUrl(START_URL);
+        });
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -67,10 +141,13 @@ public class MainActivity extends Activity {
         settings.setSupportZoom(true);
         settings.setBuiltInZoomControls(true);
         settings.setDisplayZoomControls(false);
-        settings.setSupportMultipleWindows(true);
-        settings.setJavaScriptCanOpenWindowsAutomatically(true);
+        settings.setSupportMultipleWindows(false);
+        settings.setJavaScriptCanOpenWindowsAutomatically(false);
         settings.setAllowFileAccess(false);
         settings.setAllowContentAccess(false);
+
+        webView.setVerticalScrollBarEnabled(false);
+        webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
 
         CookieManager cookieManager = CookieManager.getInstance();
         cookieManager.setAcceptCookie(true);
@@ -80,16 +157,60 @@ public class MainActivity extends Activity {
         webView.setWebChromeClient(new CarlosWebChromeClient());
     }
 
+    private boolean isBlockedAdHost(Uri uri) {
+        String host = uri == null ? null : uri.getHost();
+        if (host == null) {
+            return false;
+        }
+
+        host = host.toLowerCase(Locale.US);
+        for (String blockedHost : BLOCKED_AD_HOSTS) {
+            if (host.equals(blockedHost) || host.endsWith("." + blockedHost)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private WebResourceResponse emptyResponse() {
+        return new WebResourceResponse(
+                "text/plain",
+                "UTF-8",
+                new ByteArrayInputStream(new byte[0]));
+    }
+
+    private void installPageGuard(WebView view) {
+        view.evaluateJavascript(PAGE_GUARD_JS, null);
+    }
+
+    private void updateBackButton() {
+        boolean enabled = webView.canGoBack();
+        backButton.setEnabled(enabled);
+        backButton.setAlpha(enabled ? 1.0f : 0.45f);
+    }
+
     private final class CarlosWebViewClient extends WebViewClient {
         @Override
         public void onPageStarted(WebView view, String url, Bitmap favicon) {
             progress.setVisibility(View.VISIBLE);
             errorPanel.setVisibility(View.GONE);
+            if (!firstPageLoaded) {
+                loadingPanel.setVisibility(View.VISIBLE);
+            }
+        }
+
+        @Override
+        public void onPageCommitVisible(WebView view, String url) {
+            installPageGuard(view);
         }
 
         @Override
         public void onPageFinished(WebView view, String url) {
             progress.setVisibility(View.GONE);
+            loadingPanel.setVisibility(View.GONE);
+            firstPageLoaded = true;
+            installPageGuard(view);
+            updateBackButton();
             CookieManager.getInstance().flush();
         }
 
@@ -97,13 +218,25 @@ public class MainActivity extends Activity {
         public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
             Uri uri = request.getUrl();
             String scheme = uri.getScheme();
-            return !("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme));
+            if (!("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme))) {
+                return true;
+            }
+            return isBlockedAdHost(uri);
+        }
+
+        @Override
+        public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+            if (isBlockedAdHost(request.getUrl())) {
+                return emptyResponse();
+            }
+            return super.shouldInterceptRequest(view, request);
         }
 
         @Override
         public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
             if (request.isForMainFrame()) {
                 progress.setVisibility(View.GONE);
+                loadingPanel.setVisibility(View.GONE);
                 errorPanel.setVisibility(View.VISIBLE);
             }
         }
@@ -127,8 +260,9 @@ public class MainActivity extends Activity {
             customViewCallback = callback;
             originalOrientation = getRequestedOrientation();
 
-            webView.setVisibility(View.GONE);
-            root.addView(customView, new FrameLayout.LayoutParams(
+            chromeContainer.setVisibility(View.GONE);
+            fullscreenContainer.setVisibility(View.VISIBLE);
+            fullscreenContainer.addView(customView, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT));
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
@@ -146,39 +280,7 @@ public class MainActivity extends Activity {
 
         @Override
         public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture, Message resultMsg) {
-            if (!isUserGesture) {
-                return false;
-            }
-
-            WebView popup = new WebView(MainActivity.this);
-            popup.setWebViewClient(new WebViewClient() {
-                @Override
-                public boolean shouldOverrideUrlLoading(WebView popupView, WebResourceRequest request) {
-                    Uri uri = request.getUrl();
-                    String scheme = uri.getScheme();
-                    if ("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme)) {
-                        webView.loadUrl(uri.toString());
-                    }
-                    popupView.destroy();
-                    return true;
-                }
-
-                @Override
-                public void onPageStarted(WebView popupView, String url, Bitmap favicon) {
-                    Uri uri = Uri.parse(url);
-                    String scheme = uri.getScheme();
-                    if ("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme)) {
-                        webView.loadUrl(url);
-                    }
-                    popupView.stopLoading();
-                    popupView.destroy();
-                }
-            });
-
-            WebView.WebViewTransport transport = (WebView.WebViewTransport) resultMsg.obj;
-            transport.setWebView(popup);
-            resultMsg.sendToTarget();
-            return true;
+            return false;
         }
     }
 
@@ -187,9 +289,10 @@ public class MainActivity extends Activity {
             return;
         }
 
-        root.removeView(customView);
+        fullscreenContainer.removeView(customView);
+        fullscreenContainer.setVisibility(View.GONE);
         customView = null;
-        webView.setVisibility(View.VISIBLE);
+        chromeContainer.setVisibility(View.VISIBLE);
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
         setRequestedOrientation(originalOrientation);
