@@ -15,13 +15,12 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 public final class PlaylistRepository {
 
-    // Fuentes públicas/gratuitas. Carlos TV fusiona todo y elimina duplicados.
-    // Las listas por país se marcan assumeSpanish=true porque corresponden a
-    // mercados hispanohablantes. Las listas temáticas globales pasan por el
-    // filtro de idioma antes de incorporarse al catálogo.
     private static final SourceSpec[] SOURCES = new SourceSpec[]{
             new SourceSpec("TDTChannels España", "https://www.tdtchannels.com/lists/tv.m3u8", "tdtchannels_es.m3u8", true),
             new SourceSpec("IPTV-org México", "https://iptv-org.github.io/iptv/countries/mx.m3u", "iptv_mx.m3u", true),
@@ -47,7 +46,10 @@ public final class PlaylistRepository {
             new SourceSpec("Series en español", "https://iptv-org.github.io/iptv/categories/series.m3u", "series_es.m3u", false)
     };
 
+    private static final int SOURCE_THREADS = 6;
     private static final int MAX_PLAYLIST_BYTES = 30 * 1024 * 1024;
+    private static final int CONNECT_TIMEOUT_MS = 6_000;
+    private static final int READ_TIMEOUT_MS = 10_000;
     private static final long CACHE_MAX_AGE_MS = 6L * 60L * 60L * 1000L;
 
     private final Context context;
@@ -65,31 +67,36 @@ public final class PlaylistRepository {
         int skipped = 0;
         boolean onlyCache = true;
 
-        for (SourceSpec source : SOURCES) {
-            try {
-                SourceResult sourceResult = loadSource(source, forceRefresh);
-                List<Channel> spanishChannels = SpanishChannelFilter.filterAndNormalize(
-                        sourceResult.channels,
-                        source.assumeSpanish);
-                skipped += sourceResult.skipped;
-                skipped += Math.max(0, sourceResult.channels.size() - spanishChannels.size());
-
-                int beforeMerge = merged.size();
-                for (Channel channel : spanishChannels) {
-                    if (seenStreams.add(channel.getStreamUrl())) {
-                        merged.add(channel);
-                    } else {
-                        skipped++;
-                    }
-                }
-
-                if (merged.size() > beforeMerge) {
-                    loadedSources.add(source.name);
-                    onlyCache &= sourceResult.fromCache;
-                }
-            } catch (IOException sourceError) {
-                failedSources.add(source.name);
+        ExecutorService sourceExecutor = Executors.newFixedThreadPool(SOURCE_THREADS);
+        List<Future<LoadedSource>> futures = new ArrayList<>();
+        try {
+            for (SourceSpec source : SOURCES) {
+                futures.add(sourceExecutor.submit(() -> loadAndFilter(source, forceRefresh)));
             }
+
+            for (int i = 0; i < futures.size(); i++) {
+                SourceSpec source = SOURCES[i];
+                try {
+                    LoadedSource loaded = futures.get(i).get();
+                    skipped += loaded.skipped;
+                    int beforeMerge = merged.size();
+                    for (Channel channel : loaded.channels) {
+                        if (seenStreams.add(channel.getStreamUrl())) {
+                            merged.add(channel);
+                        } else {
+                            skipped++;
+                        }
+                    }
+                    if (merged.size() > beforeMerge) {
+                        loadedSources.add(source.name);
+                        onlyCache &= loaded.fromCache;
+                    }
+                } catch (Exception sourceError) {
+                    failedSources.add(source.name);
+                }
+            }
+        } finally {
+            sourceExecutor.shutdownNow();
         }
 
         if (merged.isEmpty()) {
@@ -103,6 +110,16 @@ public final class PlaylistRepository {
         }
 
         return new LoadResult(merged, skipped, sourceName, onlyCache);
+    }
+
+    private LoadedSource loadAndFilter(SourceSpec source, boolean forceRefresh) throws IOException {
+        SourceResult sourceResult = loadSource(source, forceRefresh);
+        List<Channel> spanishChannels = SpanishChannelFilter.filterAndNormalize(
+                sourceResult.channels,
+                source.assumeSpanish);
+        int skipped = sourceResult.skipped
+                + Math.max(0, sourceResult.channels.size() - spanishChannels.size());
+        return new LoadedSource(spanishChannels, skipped, sourceResult.fromCache);
     }
 
     private SourceResult loadSource(SourceSpec source, boolean forceRefresh) throws IOException {
@@ -138,11 +155,14 @@ public final class PlaylistRepository {
         HttpURLConnection connection = null;
         try {
             connection = (HttpURLConnection) new URL(address).openConnection();
-            connection.setConnectTimeout(8_000);
-            connection.setReadTimeout(15_000);
+            connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
+            connection.setReadTimeout(READ_TIMEOUT_MS);
             connection.setInstanceFollowRedirects(true);
+            connection.setUseCaches(true);
             connection.setRequestProperty("User-Agent", "CarlosTV/0.5 Android");
-            connection.setRequestProperty("Accept", "application/x-mpegURL, application/vnd.apple.mpegurl, text/plain, */*");
+            connection.setRequestProperty(
+                    "Accept",
+                    "application/x-mpegURL, application/vnd.apple.mpegurl, text/plain, */*");
 
             int status = connection.getResponseCode();
             if (status < 200 || status >= 300) {
@@ -185,7 +205,7 @@ public final class PlaylistRepository {
                 }
             }
         } catch (IOException ignored) {
-            // La caché es opcional; la lista descargada sigue siendo utilizable.
+            // La caché es opcional.
         } finally {
             if (temporary.exists() && !temporary.equals(cacheFile)) {
                 //noinspection ResultOfMethodCallIgnored
@@ -214,6 +234,18 @@ public final class PlaylistRepository {
         private final boolean fromCache;
 
         private SourceResult(List<Channel> channels, int skipped, boolean fromCache) {
+            this.channels = channels;
+            this.skipped = skipped;
+            this.fromCache = fromCache;
+        }
+    }
+
+    private static final class LoadedSource {
+        private final List<Channel> channels;
+        private final int skipped;
+        private final boolean fromCache;
+
+        private LoadedSource(List<Channel> channels, int skipped, boolean fromCache) {
             this.channels = channels;
             this.skipped = skipped;
             this.fromCache = fromCache;
