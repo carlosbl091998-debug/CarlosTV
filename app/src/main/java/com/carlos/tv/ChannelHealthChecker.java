@@ -19,12 +19,12 @@ public final class ChannelHealthChecker {
         void onFinished(Set<String> failedUrls);
     }
 
-    private static final int MAX_CHECKS = 120;
-    private static final int CONNECT_TIMEOUT_MS = 3_500;
-    private static final int READ_TIMEOUT_MS = 3_500;
+    private static final int MAX_CHECKS = 80;
+    private static final int CONNECT_TIMEOUT_MS = 2_500;
+    private static final int READ_TIMEOUT_MS = 2_500;
 
     private final ExecutorService coordinator = Executors.newSingleThreadExecutor();
-    private final ExecutorService probes = Executors.newFixedThreadPool(6);
+    private final ExecutorService probes = Executors.newFixedThreadPool(8);
     private volatile boolean stopped;
 
     public void check(List<Channel> channels, Callback callback) {
@@ -60,7 +60,7 @@ public final class ChannelHealthChecker {
             } catch (CancellationException ignored) {
                 return;
             } catch (Exception ignored) {
-                // Un tiempo de espera no prueba que el canal esté caído; se conserva.
+                // Un timeout no demuestra que el canal esté caído; se conserva.
             }
         }
 
@@ -77,7 +77,8 @@ public final class ChannelHealthChecker {
             connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
             connection.setReadTimeout(READ_TIMEOUT_MS);
             connection.setInstanceFollowRedirects(true);
-            connection.setRequestProperty("User-Agent", "CarlosTV/0.4 Android");
+            connection.setRequestProperty("Range", "bytes=0-1023");
+            connection.setRequestProperty("User-Agent", "CarlosTV/0.5 Android");
             connection.setRequestProperty(
                     "Accept",
                     "application/vnd.apple.mpegurl, application/x-mpegURL, video/*, */*");
@@ -91,7 +92,7 @@ public final class ChannelHealthChecker {
                 return address;
             }
         } catch (IOException | ClassCastException ignored) {
-            // Fallos de red temporales se consideran desconocidos, no canales muertos.
+            // Fallos temporales se consideran desconocidos, no canales muertos.
         } finally {
             if (connection != null) {
                 connection.disconnect();
