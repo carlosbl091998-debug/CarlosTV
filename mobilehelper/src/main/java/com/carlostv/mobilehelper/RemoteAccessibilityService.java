@@ -24,7 +24,6 @@ public class RemoteAccessibilityService extends AccessibilityService {
     private WindowManager windowManager;
     private LinearLayout overlay;
     private boolean overlayAttached = false;
-    private boolean minimized = false;
 
     @Override
     protected void onServiceConnected() {
@@ -32,7 +31,7 @@ public class RemoteAccessibilityService extends AccessibilityService {
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         buildOverlay();
         AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root != null && XUPER_PACKAGE.contentEquals(root.getPackageName())) {
+        if (root != null && root.getPackageName() != null && XUPER_PACKAGE.contentEquals(root.getPackageName())) {
             showOverlay();
         }
     }
@@ -55,10 +54,7 @@ public class RemoteAccessibilityService extends AccessibilityService {
 
     @Override
     public void onDestroy() {
-        if (overlayAttached && windowManager != null && overlay != null) {
-            try { windowManager.removeView(overlay); } catch (Exception ignored) {}
-        }
-        overlayAttached = false;
+        hideOverlay();
         super.onDestroy();
     }
 
@@ -67,6 +63,7 @@ public class RemoteAccessibilityService extends AccessibilityService {
         overlay.setOrientation(LinearLayout.VERTICAL);
         overlay.setPadding(dp(6), dp(6), dp(6), dp(6));
         overlay.setBackgroundColor(Color.argb(205, 20, 20, 20));
+        overlay.setContentDescription("Control táctil Xuper");
 
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
@@ -76,16 +73,12 @@ public class RemoteAccessibilityService extends AccessibilityService {
         label.setText("Xuper");
         label.setTextColor(Color.WHITE);
         label.setTextSize(12);
-        LinearLayout.LayoutParams labelLp = new LinearLayout.LayoutParams(0, dp(30), 1f);
+        LinearLayout.LayoutParams labelLp = new LinearLayout.LayoutParams(0, dp(34), 1f);
         top.addView(label, labelLp);
 
         Button back = smallButton("Atrás", "Volver");
         back.setOnClickListener(v -> performGlobalAction(GLOBAL_ACTION_BACK));
-        top.addView(back, new LinearLayout.LayoutParams(dp(64), dp(34)));
-
-        Button collapse = smallButton("−", "Minimizar control");
-        collapse.setOnClickListener(v -> toggleMinimized());
-        top.addView(collapse, new LinearLayout.LayoutParams(dp(40), dp(34)));
+        top.addView(back, new LinearLayout.LayoutParams(dp(72), dp(34)));
         overlay.addView(top, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(36)));
 
         GridLayout pad = new GridLayout(this);
@@ -136,11 +129,9 @@ public class RemoteAccessibilityService extends AccessibilityService {
     }
 
     private WindowManager.LayoutParams overlayParams() {
-        int width = minimized ? dp(54) : dp(186);
-        int height = minimized ? dp(54) : dp(204);
         WindowManager.LayoutParams p = new WindowManager.LayoutParams(
-                width,
-                height,
+                dp(186),
+                dp(204),
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                         | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
@@ -167,32 +158,11 @@ public class RemoteAccessibilityService extends AccessibilityService {
         overlayAttached = false;
     }
 
-    private void toggleMinimized() {
-        if (!overlayAttached || windowManager == null) return;
-        minimized = !minimized;
-        if (minimized) {
-            overlay.removeAllViews();
-            Button restore = smallButton("🎮", "Mostrar control Xuper");
-            restore.setTextSize(20);
-            restore.setOnClickListener(v -> {
-                minimized = false;
-                buildOverlay();
-                try { windowManager.removeViewImmediate(v.getParent() instanceof View ? (View) v.getParent() : v); } catch (Exception ignored) {}
-                overlayAttached = false;
-                showOverlay();
-            });
-            overlay.addView(restore, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        } else {
-            buildOverlay();
-        }
-        try { windowManager.updateViewLayout(overlay, overlayParams()); } catch (Exception ignored) {}
-    }
-
     private enum Direction { UP, DOWN, LEFT, RIGHT }
 
     private void move(Direction direction) {
         AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null || root.getPackageName() == null || !XUPER_PACKAGE.contentEquals(root.getPackageName())) return;
+        if (!isXuperRoot(root)) return;
 
         List<AccessibilityNodeInfo> nodes = new ArrayList<>();
         collectCandidates(root, nodes, 0);
@@ -200,18 +170,23 @@ public class RemoteAccessibilityService extends AccessibilityService {
 
         AccessibilityNodeInfo current = root.findFocus(AccessibilityNodeInfo.FOCUS_ACCESSIBILITY);
         if (current == null) current = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
-        if (current == null || current.getBoundsInScreen(new Rect()) == null) {
+        if (current == null) {
             focusNode(nearestToScreenCenter(nodes));
             return;
         }
 
         Rect cr = new Rect();
         current.getBoundsInScreen(cr);
+        if (cr.isEmpty()) {
+            focusNode(nearestToScreenCenter(nodes));
+            return;
+        }
+
         float cx = cr.exactCenterX();
         float cy = cr.exactCenterY();
-
         AccessibilityNodeInfo best = null;
         double bestScore = Double.MAX_VALUE;
+
         for (AccessibilityNodeInfo n : nodes) {
             if (n == current) continue;
             Rect r = new Rect();
@@ -253,7 +228,7 @@ public class RemoteAccessibilityService extends AccessibilityService {
 
     private void clickFocused() {
         AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null || root.getPackageName() == null || !XUPER_PACKAGE.contentEquals(root.getPackageName())) return;
+        if (!isXuperRoot(root)) return;
         AccessibilityNodeInfo node = root.findFocus(AccessibilityNodeInfo.FOCUS_ACCESSIBILITY);
         if (node == null) node = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
         if (node == null) {
@@ -268,6 +243,10 @@ public class RemoteAccessibilityService extends AccessibilityService {
             clickable = clickable.getParent();
         }
         node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+    }
+
+    private boolean isXuperRoot(AccessibilityNodeInfo root) {
+        return root != null && root.getPackageName() != null && XUPER_PACKAGE.contentEquals(root.getPackageName());
     }
 
     private void collectCandidates(AccessibilityNodeInfo node, List<AccessibilityNodeInfo> out, int depth) {
