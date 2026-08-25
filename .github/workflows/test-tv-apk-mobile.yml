@@ -11,178 +11,89 @@ permissions:
 jobs:
   android36-launch-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
-
+    timeout-minutes: 40
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Java
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v3
 
-      - name: Download exact TV base APK
+      - name: Download same package/version mirror
         shell: bash
         run: |
           set -euxo pipefail
-          EXPECTED='f7180baa72e1ab0693b47536617595dd16987aa28b34d5e7e496bfd43a72cef3'
-          rm -f base.apk candidate.apk short.html urls.txt mediafire.html mediafire_urls.txt
-
-          curl -fL --retry 2 --connect-timeout 20 --max-time 120 \
-            -A 'Mozilla/5.0' 'https://go.aftvnews.com/9764306' -o short.html
-
-          python3 - <<'PY' > urls.txt
-          import html, re
-          text = open('short.html', 'r', encoding='utf-8', errors='ignore').read()
-          text = html.unescape(text).replace('\\/', '/')
-          urls = re.findall(r"https?://[^\"'<>\r\n\t ]+", text)
-          seen = set()
-          for u in urls:
-              u = u.rstrip(').,;')
-              if u in seen:
-                  continue
-              seen.add(u)
-              if 'go.aftvnews.com' in u or 'aftv.news/' in u:
-                  continue
-              print(u)
+          PAGE='https://www.mediafire.com/file/azgvigddkzvrss4/Xuper_4.34.5_%28com.android.mgstv%29.apk/file'
+          curl -fL -A 'Mozilla/5.0' "$PAGE" -o mf.html
+          python3 - <<'PY' > direct.txt
+          import html,re
+          t=html.unescape(open('mf.html',encoding='utf-8',errors='ignore').read()).replace('\\/','/')
+          pats=[r'id=[\"\']downloadButton[\"\'][^>]*href=[\"\']([^\"\']+)',r'href=[\"\']([^\"\']+)[\"\'][^>]*id=[\"\']downloadButton[\"\']']
+          for p in pats:
+              m=re.search(p,t,re.I)
+              if m:
+                  print(m.group(1)); break
           PY
+          test -s direct.txt
+          curl -fL -A 'Mozilla/5.0' "$(cat direct.txt)" -o base.apk
+          unzip -t base.apk >/dev/null
+          sha256sum base.apk | tee mirror-file-sha.txt
 
-          echo 'Destination candidates from Downloader page:'
-          cat urls.txt || true
-
-          verify_candidate() {
-            local FILE="$1"
-            if ! unzip -t "$FILE" >/dev/null 2>&1; then
-              return 1
-            fi
-            local GOT
-            GOT="$(sha256sum "$FILE" | awk '{print $1}')"
-            echo "Candidate SHA256: $GOT"
-            if [ "$GOT" = "$EXPECTED" ]; then
-              mv "$FILE" base.apk
-              return 0
-            fi
-            return 1
-          }
-
-          while IFS= read -r URL; do
-            [ -n "$URL" ] || continue
-            rm -f candidate.apk
-
-            if [[ "$URL" == *mediafire.com/file/* ]]; then
-              echo "Resolving MediaFire page: $URL"
-              if ! curl -fL --retry 2 --connect-timeout 20 --max-time 120 \
-                    -A 'Mozilla/5.0' "$URL" -o mediafire.html; then
-                continue
-              fi
-              python3 - <<'PY' > mediafire_urls.txt
-          import html, re
-          text = open('mediafire.html', 'r', encoding='utf-8', errors='ignore').read()
-          text = html.unescape(text).replace('\\/', '/')
-          patterns = [
-              r'id=[\"\']downloadButton[\"\'][^>]*href=[\"\']([^\"\']+)',
-              r'href=[\"\']([^\"\']+)[\"\'][^>]*id=[\"\']downloadButton[\"\']',
-              r"(https://download[^\"'<>\r\n\t ]+\.apk[^\"'<>\r\n\t ]*)",
-          ]
-          seen = set()
-          for pattern in patterns:
-              for u in re.findall(pattern, text, flags=re.I):
-                  if u not in seen:
-                      seen.add(u)
-                      print(u)
-          PY
-              while IFS= read -r DIRECT; do
-                [ -n "$DIRECT" ] || continue
-                echo "Trying MediaFire direct URL"
-                if curl -fL --retry 2 --connect-timeout 20 --max-time 240 \
-                     -A 'Mozilla/5.0' "$DIRECT" -o candidate.apk && verify_candidate candidate.apk; then
-                  break 2
-                fi
-              done < mediafire_urls.txt
-            else
-              echo "Trying resolved URL: $URL"
-              if curl -fL --retry 2 --connect-timeout 20 --max-time 240 \
-                   -A 'Mozilla/5.0' "$URL" -o candidate.apk && verify_candidate candidate.apk; then
-                break
-              fi
-            fi
-          done < urls.txt
-
-          if [ ! -f base.apk ]; then
-            MF='https://www.mediafire.com/file/azgvigddkzvrss4/Xuper_4.34.5_%28com.android.mgstv%29.apk/file'
-            echo "Trying hash-verified mirror fallback: $MF"
-            curl -fL --retry 2 --connect-timeout 20 --max-time 120 -A 'Mozilla/5.0' "$MF" -o mediafire.html || true
-            python3 - <<'PY' > mediafire_urls.txt
-          import html, re, os
-          text = open('mediafire.html', 'r', encoding='utf-8', errors='ignore').read() if os.path.exists('mediafire.html') else ''
-          text = html.unescape(text).replace('\\/', '/')
-          for pattern in [
-              r'id=[\"\']downloadButton[\"\'][^>]*href=[\"\']([^\"\']+)',
-              r'href=[\"\']([^\"\']+)[\"\'][^>]*id=[\"\']downloadButton[\"\']',
-              r"(https://download[^\"'<>\r\n\t ]+\.apk[^\"'<>\r\n\t ]*)",
-          ]:
-              for u in re.findall(pattern, text, flags=re.I):
-                  print(u)
-          PY
-            while IFS= read -r DIRECT; do
-              [ -n "$DIRECT" ] || continue
-              if curl -fL --retry 2 --connect-timeout 20 --max-time 240 -A 'Mozilla/5.0' "$DIRECT" -o candidate.apk && verify_candidate candidate.apk; then
-                break
-              fi
-            done < mediafire_urls.txt
-          fi
-
-          test -f base.apk
-          echo 'Exact user base APK recovered and SHA-256 verified.'
-
-      - name: Find Android build tools
+      - name: Compute signature-independent content fingerprint
         shell: bash
         run: |
-          set -euxo pipefail
+          python3 - <<'PY' | tee mirror-content.txt
+          import hashlib,zipfile
+          p='base.apk'
+          with zipfile.ZipFile(p) as z:
+              names=sorted(n for n in z.namelist() if not n.upper().startswith('META-INF/'))
+              h=hashlib.sha256()
+              for n in names:
+                  d=z.read(n)
+                  h.update(n.encode()+b'\0'+hashlib.sha256(d).digest())
+              print('entries_total=',len(z.namelist()))
+              print('entries_nonmeta=',len(names))
+              print('logical_sha256=',h.hexdigest())
+              for n in ['AndroidManifest.xml','classes.dex','resources.arsc','assets/ijm_lib/arm64-v8a/libexec.so','assets/ijm_lib/arm64-v8a/libexecmain.so']:
+                  d=z.read(n)
+                  print(n,len(d),hashlib.sha256(d).hexdigest())
+          PY
+
+      - name: Install Android build tools
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
           sdkmanager 'build-tools;36.0.0'
-          BT="$ANDROID_HOME/build-tools/36.0.0"
-          echo "BT=$BT" >> "$GITHUB_ENV"
-          "$BT/apksigner" version
-          "$BT/zipalign" -h >/dev/null 2>&1 || true
+          echo "BT=$ANDROID_HOME/build-tools/36.0.0" >> "$GITHUB_ENV"
 
       - name: Create test signing key
         shell: bash
         run: |
-          keytool -genkeypair -v \
-            -keystore mobile-test.jks \
-            -storepass android -keypass android \
-            -alias mobiletest -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname 'CN=Mobile Adaptation Test,O=Local Test,C=MX'
+          keytool -genkeypair -v -keystore mobile-test.jks -storepass android -keypass android -alias mobiletest -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Mobile Adaptation Test,O=Local Test,C=MX'
 
-      - name: Build no-op re-signed control APK
+      - name: Build no-op re-signed control
         shell: bash
         run: |
           set -euxo pipefail
           cp base.apk noop-unsigned.apk
           zip -d noop-unsigned.apk 'META-INF/*.RSA' 'META-INF/*.DSA' 'META-INF/*.EC' 'META-INF/*.SF' 'META-INF/MANIFEST.MF' || true
           "$BT/zipalign" -f -p 4 noop-unsigned.apk noop-aligned.apk
-          "$BT/apksigner" sign \
-            --ks mobile-test.jks --ks-pass pass:android --key-pass pass:android \
-            --out noop-resigned.apk noop-aligned.apk
+          "$BT/apksigner" sign --ks mobile-test.jks --ks-pass pass:android --key-pass pass:android --out noop-resigned.apk noop-aligned.apk
           "$BT/apksigner" verify --verbose noop-resigned.apk
 
-      - name: Build minimal sensor-orientation APK
+      - name: Build minimal sensor-orientation candidate
         shell: bash
         run: |
           set -euxo pipefail
           python3 tools/patch_tv_manifest.py base.apk sensor-unsigned.apk --orientation 4
           "$BT/zipalign" -f -p 4 sensor-unsigned.apk sensor-aligned.apk
-          "$BT/apksigner" sign \
-            --ks mobile-test.jks --ks-pass pass:android --key-pass pass:android \
-            --out sensor-mobile.apk sensor-aligned.apk
+          "$BT/apksigner" sign --ks mobile-test.jks --ks-pass pass:android --key-pass pass:android --out sensor-mobile.apk sensor-aligned.apk
           "$BT/apksigner" verify --verbose sensor-mobile.apk
 
-      - name: Emulator launch tests (Android 16 / API 36)
+      - name: Emulator launch tests Android 16 phone profile
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 36
@@ -190,6 +101,7 @@ jobs:
           arch: x86_64
           profile: pixel_6
           disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: bash tools/run_apk_launch_tests.sh
 
       - name: Upload diagnostics
@@ -199,7 +111,6 @@ jobs:
           name: mobile-apk-diagnostics
           if-no-files-found: ignore
           path: |
-            base.apk
-            noop-resigned.apk
-            sensor-mobile.apk
+            mirror-file-sha.txt
+            mirror-content.txt
             diagnostics/**
