@@ -108,6 +108,14 @@ jobs:
           "$BT/apksigner" sign --ks mobile-test.jks --ks-pass pass:android --key-pass pass:android --out Xuper_Movil_sensor_test.apk sensor-aligned.apk
           "$BT/apksigner" verify --verbose Xuper_Movil_sensor_test.apk
 
+      - name: Enable KVM
+        shell: bash
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm || true
+
       - name: Emulator launch tests on phone profile with ARM translation
         uses: reactivecircus/android-emulator-runner@v2
         with:
