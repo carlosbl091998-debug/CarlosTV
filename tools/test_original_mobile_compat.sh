@@ -7,30 +7,61 @@ mkdir -p diagnostics
 
 adb install -r base.apk
 
-# Grant common runtime permissions where Android permits it so system dialogs
-# do not obscure the UI screenshots.
-for p in \
-  android.permission.READ_PHONE_STATE \
-  android.permission.READ_PHONE_NUMBERS \
-  android.permission.POST_NOTIFICATIONS \
-  android.permission.ACCESS_FINE_LOCATION \
-  android.permission.ACCESS_COARSE_LOCATION \
-  android.permission.READ_MEDIA_IMAGES \
-  android.permission.READ_MEDIA_VIDEO \
-  android.permission.RECORD_AUDIO
-do
-  adb shell pm grant "$PKG" "$p" >/dev/null 2>&1 || true
-done
+# Do not let Android's first-time immersive-mode tutorial cover Xuper.
+adb shell settings put secure immersive_mode_confirmations confirmed >/dev/null 2>&1 || true
+
+# Record and grant every requested runtime permission that can legally be granted.
+adb shell dumpsys package "$PKG" > diagnostics/package-before.txt || true
+awk '/requested permissions:/{f=1;next}/install permissions:/{f=0}f && /android\.permission\./{gsub(":",""); print $1}' diagnostics/package-before.txt | sort -u > diagnostics/requested-permissions.txt || true
+while IFS= read -r p; do
+  [ -n "$p" ] && adb shell pm grant "$PKG" "$p" >/dev/null 2>&1 || true
+done < diagnostics/requested-permissions.txt
+
+# Click only standard positive Android system-dialog buttons. This is used to
+# expose the app UI in screenshots; it does not alter the APK.
+dismiss_system_dialogs() {
+  local i xy
+  for i in 1 2 3 4 5 6 7 8; do
+    adb shell uiautomator dump /sdcard/dialog.xml >/dev/null 2>&1 || true
+    adb pull /sdcard/dialog.xml /tmp/dialog.xml >/dev/null 2>&1 || true
+    xy=$(python3 - <<'PY'
+import re, xml.etree.ElementTree as ET
+try:
+    root=ET.parse('/tmp/dialog.xml').getroot()
+except Exception:
+    raise SystemExit
+wanted=(
+    'allow','while using the app','only this time','ok','got it','continue',
+    'permitir','mientras se usa la app','solo esta vez','aceptar','entendido','continuar'
+)
+for n in root.iter('node'):
+    text=(n.attrib.get('text') or '').strip().lower()
+    if text in wanted:
+        m=re.fullmatch(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]',n.attrib.get('bounds',''))
+        if m:
+            x1,y1,x2,y2=map(int,m.groups())
+            print((x1+x2)//2,(y1+y2)//2)
+            break
+PY
+)
+    [ -z "$xy" ] && break
+    adb shell input tap $xy >/dev/null 2>&1 || true
+    sleep 1
+  done
+}
 
 capture() {
   local name="$1"
   adb shell am force-stop "$PKG" || true
   adb shell am start -W -n "$PKG/$ACT" > "diagnostics/${name}-start.txt" 2>&1 || true
-  sleep 10
+  sleep 5
+  dismiss_system_dialogs
+  sleep 6
   adb exec-out screencap -p > "diagnostics/${name}.png" || true
   adb shell uiautomator dump /sdcard/window.xml >/dev/null 2>&1 || true
   adb pull /sdcard/window.xml "diagnostics/${name}-ui.xml" >/dev/null 2>&1 || true
-  adb shell dumpsys window windows | grep -E 'mCurrentFocus|mFocusedApp' > "diagnostics/${name}-focus.txt" || true
+  adb shell dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity' > "diagnostics/${name}-focus.txt" || true
+  adb shell dumpsys display > "diagnostics/${name}-display.txt" || true
   local pid
   pid=$(adb shell pidof "$PKG" 2>/dev/null | tr -d '\r' || true)
   printf '%s pid=%s\n' "$name" "${pid:-DEAD}" | tee -a diagnostics/results.txt
