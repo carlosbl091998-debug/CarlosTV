@@ -24,10 +24,9 @@ jobs:
       - name: Configure Android SDK
         uses: android-actions/setup-android@v4
 
-      - name: Install SDK and Gradle
+      - name: Install SDK
         shell: bash
-        run: |
-          sdkmanager "platforms;android-36" "build-tools;35.0.0"
+        run: sdkmanager "platforms;android-36" "build-tools;35.0.0"
 
       - name: Configure Gradle 8.13
         uses: gradle/actions/setup-gradle@v6
@@ -90,89 +89,7 @@ jobs:
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
-          script: |
-            set -eux
-            mkdir -p helper-diagnostics
-            adb install -r base.apk
-            adb install -r Xuper-Mobile-Helper.apk
-
-            # Start the accessibility service exactly as Android does after the user enables it.
-            adb shell settings put secure enabled_accessibility_services 'com.carlostv.mobilehelper/com.carlostv.mobilehelper.RemoteAccessibilityService'
-            adb shell settings put secure accessibility_enabled 1
-            sleep 3
-            adb shell dumpsys accessibility > helper-diagnostics/accessibility.txt
-            grep -q 'com.carlostv.mobilehelper' helper-diagnostics/accessibility.txt
-
-            # Avoid Android first-run tutorials and grant every grantable runtime permission Xuper asks for.
-            adb shell settings put secure immersive_mode_confirmations confirmed || true
-            adb shell dumpsys package com.android.mgstv > helper-diagnostics/xuper-package.txt
-            awk '/requested permissions:/{f=1;next}/install permissions:/{f=0}f && /android\.permission\./{gsub(":",""); print $1}' helper-diagnostics/xuper-package.txt | sort -u > helper-diagnostics/xuper-permissions.txt || true
-            while IFS= read -r p; do
-              [ -n "$p" ] && adb shell pm grant com.android.mgstv "$p" >/dev/null 2>&1 || true
-            done < helper-diagnostics/xuper-permissions.txt
-
-            adb shell am force-stop com.android.mgstv
-            adb shell am start -W -n com.android.mgstv/com.interactive.brasiliptv.ui.activity.WelcomeActivity > helper-diagnostics/xuper-start.txt
-            sleep 7
-
-            # Dismiss only standard positive Android permission/tutorial dialogs.
-            for i in 1 2 3 4 5 6; do
-              adb shell uiautomator dump /sdcard/d.xml >/dev/null 2>&1 || true
-              adb pull /sdcard/d.xml /tmp/d.xml >/dev/null 2>&1 || true
-              xy=$(python3 - <<'PY'
-            import re,xml.etree.ElementTree as ET
-            try: root=ET.parse('/tmp/d.xml').getroot()
-            except Exception: raise SystemExit
-            wanted=('allow','while using the app','only this time','ok','got it','continue','permitir','mientras se usa la app','solo esta vez','aceptar','entendido','continuar')
-            for n in root.iter('node'):
-                if (n.attrib.get('text') or '').strip().lower() in wanted:
-                    m=re.fullmatch(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]',n.attrib.get('bounds',''))
-                    if m:
-                        x1,y1,x2,y2=map(int,m.groups()); print((x1+x2)//2,(y1+y2)//2); break
-            PY
-            )
-              [ -z "${xy:-}" ] && break
-              adb shell input tap $xy
-              sleep 1
-            done
-            sleep 5
-
-            xpid=$(adb shell pidof com.android.mgstv | tr -d '\r')
-            hpid=$(adb shell pidof com.carlostv.mobilehelper | tr -d '\r')
-            test -n "$xpid"
-            test -n "$hpid"
-            echo "xuper_pid=$xpid helper_pid=$hpid" | tee helper-diagnostics/results.txt
-
-            adb shell uiautomator dump /sdcard/all.xml >/dev/null 2>&1 || true
-            adb pull /sdcard/all.xml helper-diagnostics/ui.xml >/dev/null 2>&1 || true
-            adb shell dumpsys window windows > helper-diagnostics/windows.txt
-            adb exec-out screencap -p > helper-diagnostics/helper-visible.png
-
-            # Require a real accessibility overlay from the helper.
-            if ! grep -q 'Mover derecha\|Aceptar\|Control táctil Xuper' helper-diagnostics/ui.xml 2>/dev/null; then
-              grep -q 'com.carlostv.mobilehelper' helper-diagnostics/windows.txt
-            fi
-
-            # Exercise two actual overlay buttons when UIAutomator exposes them.
-            python3 - <<'PY' > /tmp/taps.txt
-            import re,xml.etree.ElementTree as ET
-            try: root=ET.parse('helper-diagnostics/ui.xml').getroot()
-            except Exception: raise SystemExit
-            for wanted in ('Mover derecha','Aceptar'):
-                for n in root.iter('node'):
-                    if (n.attrib.get('content-desc') or '') == wanted:
-                        m=re.fullmatch(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]',n.attrib.get('bounds',''))
-                        if m:
-                            x1,y1,x2,y2=map(int,m.groups()); print((x1+x2)//2,(y1+y2)//2); break
-            PY
-            while read -r x y; do
-              [ -n "${x:-}" ] && adb shell input tap "$x" "$y" && sleep 1
-            done < /tmp/taps.txt
-
-            # Both processes must still be alive after interacting with the overlay.
-            test -n "$(adb shell pidof com.android.mgstv | tr -d '\r')"
-            test -n "$(adb shell pidof com.carlostv.mobilehelper | tr -d '\r')"
-            adb exec-out screencap -p > helper-diagnostics/helper-after-buttons.png
+          script: bash tools/test_xuper_mobile_helper.sh
 
       - name: Publish tested helper APK and diagnostics
         if: always()
