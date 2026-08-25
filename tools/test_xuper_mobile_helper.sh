@@ -10,11 +10,31 @@ mkdir -p "$OUT"
 adb install -r base.apk
 adb install -r Xuper-Mobile-Helper.apk
 
+# Clear Android's "stopped package" state by launching the helper once before
+# enabling its accessibility service. On fresh Android 16 emulator boots the
+# service can take a few seconds to bind, so do not treat the first dumpsys as
+# authoritative; the later ACCESSIBILITY_OVERLAY check is the real proof.
+adb shell am start -W -n "$HELPER/.MainActivity" </dev/null > "$OUT/helper-start.txt" 2>&1 || true
+sleep 2
 adb shell settings put secure enabled_accessibility_services "$SERVICE"
 adb shell settings put secure accessibility_enabled 1
-sleep 4
-adb shell dumpsys accessibility > "$OUT/accessibility.txt"
-grep -q 'com.carlostv.mobilehelper' "$OUT/accessibility.txt"
+adb shell settings get secure enabled_accessibility_services > "$OUT/accessibility-setting.txt" || true
+grep -Fq "$SERVICE" "$OUT/accessibility-setting.txt"
+
+# Give AccessibilityManager time to bind. Re-assert the setting if necessary.
+bound=0
+for i in 1 2 3 4 5 6 7 8; do
+  adb shell dumpsys accessibility > "$OUT/accessibility-$i.txt" || true
+  if grep -q 'com.carlostv.mobilehelper' "$OUT/accessibility-$i.txt"; then
+    bound=1
+    break
+  fi
+  adb shell settings put secure enabled_accessibility_services "$SERVICE"
+  adb shell settings put secure accessibility_enabled 1
+  sleep 2
+done
+printf 'accessibility_bound_before_xuper=%s\n' "$bound" > "$OUT/results.txt"
+
 adb shell settings put secure immersive_mode_confirmations confirmed >/dev/null 2>&1 || true
 
 adb shell dumpsys package "$XUPER" > "$OUT/xuper-package.txt"
@@ -57,6 +77,7 @@ PY
   done
 }
 
+# Launch the original, untouched Xuper package.
 adb shell am force-stop "$XUPER" || true
 adb shell am start -W -n "$XUPER/com.interactive.brasiliptv.ui.activity.WelcomeActivity" > "$OUT/xuper-start.txt" 2>&1 || true
 sleep 7
@@ -65,7 +86,7 @@ sleep 6
 
 xpid=$(adb shell pidof "$XUPER" 2>/dev/null | tr -d '\r' || true)
 hpid=$(adb shell pidof "$HELPER" 2>/dev/null | tr -d '\r' || true)
-printf 'xuper_pid=%s helper_pid=%s\n' "${xpid:-DEAD}" "${hpid:-DEAD}" | tee "$OUT/results.txt"
+printf 'xuper_pid=%s helper_pid=%s\n' "${xpid:-DEAD}" "${hpid:-DEAD}" | tee -a "$OUT/results.txt"
 test -n "$xpid"
 test -n "$hpid"
 
@@ -74,6 +95,9 @@ adb shell uiautomator dump /sdcard/all.xml >/dev/null 2>&1 || true
 adb pull /sdcard/all.xml "$OUT/ui-before.xml" >/dev/null 2>&1 || true
 adb shell dumpsys window windows > "$OUT/windows-before.txt" || true
 adb shell dumpsys accessibility > "$OUT/accessibility-after-launch.txt" || true
+
+# This is the authoritative proof that the accessibility service actually
+# bound and created our touch controller over Xuper.
 grep -q 'com.carlostv.mobilehelper' "$OUT/windows-before.txt"
 grep -q 'ACCESSIBILITY_OVERLAY' "$OUT/windows-before.txt"
 
