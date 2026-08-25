@@ -31,31 +31,126 @@ jobs:
         run: |
           set -euxo pipefail
           EXPECTED='f7180baa72e1ab0693b47536617595dd16987aa28b34d5e7e496bfd43a72cef3'
-          rm -f base.apk candidate.apk
-          for URL in \
-            'https://aftv.news/9764306' \
-            'https://go.aftvnews.com/9764306'; do
-            echo "Trying $URL"
-            if curl -fL --retry 2 --connect-timeout 20 --max-time 180 "$URL" -o candidate.apk; then
-              if unzip -t candidate.apk >/dev/null 2>&1; then
-                GOT="$(sha256sum candidate.apk | awk '{print $1}')"
-                echo "Downloaded SHA256: $GOT"
-                if [ "$GOT" = "$EXPECTED" ]; then
-                  mv candidate.apk base.apk
-                  break
+          rm -f base.apk candidate.apk short.html urls.txt mediafire.html mediafire_urls.txt
+
+          # Downloader's public short-link endpoint intentionally serves an HTML
+          # redirect page in normal browsers. Resolve the destination from that
+          # page rather than assuming the short URL is the APK itself.
+          curl -fL --retry 2 --connect-timeout 20 --max-time 120 \
+            -A 'Mozilla/5.0' 'https://go.aftvnews.com/9764306' -o short.html
+
+          python3 - <<'PY' > urls.txt
+          import html, re
+          text = open('short.html', 'r', encoding='utf-8', errors='ignore').read()
+          text = html.unescape(text).replace('\\/', '/')
+          urls = re.findall(r'https?://[^\"\'<>\\s]+', text)
+          seen = set()
+          for u in urls:
+              u = u.rstrip(').,;')
+              if u in seen:
+                  continue
+              seen.add(u)
+              if 'go.aftvnews.com' in u or 'aftv.news/' in u:
+                  continue
+              print(u)
+          PY
+
+          echo 'Destination candidates from Downloader page:'
+          cat urls.txt || true
+
+          verify_candidate() {
+            local FILE="$1"
+            if ! unzip -t "$FILE" >/dev/null 2>&1; then
+              return 1
+            fi
+            local GOT
+            GOT="$(sha256sum "$FILE" | awk '{print $1}')"
+            echo "Candidate SHA256: $GOT"
+            if [ "$GOT" = "$EXPECTED" ]; then
+              mv "$FILE" base.apk
+              return 0
+            fi
+            return 1
+          }
+
+          while IFS= read -r URL; do
+            [ -n "$URL" ] || continue
+            rm -f candidate.apk
+
+            if [[ "$URL" == *mediafire.com/file/* ]]; then
+              echo "Resolving MediaFire page: $URL"
+              if ! curl -fL --retry 2 --connect-timeout 20 --max-time 120 \
+                    -A 'Mozilla/5.0' "$URL" -o mediafire.html; then
+                continue
+              fi
+              python3 - <<'PY' > mediafire_urls.txt
+          import html, re
+          text = open('mediafire.html', 'r', encoding='utf-8', errors='ignore').read()
+          text = html.unescape(text).replace('\\/', '/')
+          patterns = [
+              r'id=[\"\']downloadButton[\"\'][^>]*href=[\"\']([^\"\']+)',
+              r'href=[\"\']([^\"\']+)[\"\'][^>]*id=[\"\']downloadButton[\"\']',
+              r'(https://download[^\"\'<>\\s]+\.apk[^\"\'<>\\s]*)',
+          ]
+          seen = set()
+          for pattern in patterns:
+              for u in re.findall(pattern, text, flags=re.I):
+                  if u not in seen:
+                      seen.add(u)
+                      print(u)
+          PY
+              while IFS= read -r DIRECT; do
+                [ -n "$DIRECT" ] || continue
+                echo "Trying MediaFire direct URL"
+                if curl -fL --retry 2 --connect-timeout 20 --max-time 240 \
+                     -A 'Mozilla/5.0' "$DIRECT" -o candidate.apk && verify_candidate candidate.apk; then
+                  break 2
                 fi
+              done < mediafire_urls.txt
+            else
+              echo "Trying resolved URL: $URL"
+              if curl -fL --retry 2 --connect-timeout 20 --max-time 240 \
+                   -A 'Mozilla/5.0' "$URL" -o candidate.apk && verify_candidate candidate.apk; then
+                break
               fi
             fi
-            rm -f candidate.apk
-          done
+          done < urls.txt
+
+          # Public mirror fallback for this exact package/version. It is accepted
+          # only if its SHA-256 matches the user's uploaded base.apk exactly.
+          if [ ! -f base.apk ]; then
+            MF='https://www.mediafire.com/file/azgvigddkzvrss4/Xuper_4.34.5_%28com.android.mgstv%29.apk/file'
+            echo "Trying hash-verified mirror fallback: $MF"
+            curl -fL --retry 2 --connect-timeout 20 --max-time 120 -A 'Mozilla/5.0' "$MF" -o mediafire.html || true
+            python3 - <<'PY' > mediafire_urls.txt
+          import html, re
+          text = open('mediafire.html', 'r', encoding='utf-8', errors='ignore').read() if __import__('os').path.exists('mediafire.html') else ''
+          text = html.unescape(text).replace('\\/', '/')
+          for pattern in [
+              r'id=[\"\']downloadButton[\"\'][^>]*href=[\"\']([^\"\']+)',
+              r'href=[\"\']([^\"\']+)[\"\'][^>]*id=[\"\']downloadButton[\"\']',
+              r'(https://download[^\"\'<>\\s]+\.apk[^\"\'<>\\s]*)',
+          ]:
+              for u in re.findall(pattern, text, flags=re.I):
+                  print(u)
+          PY
+            while IFS= read -r DIRECT; do
+              [ -n "$DIRECT" ] || continue
+              if curl -fL --retry 2 --connect-timeout 20 --max-time 240 -A 'Mozilla/5.0' "$DIRECT" -o candidate.apk && verify_candidate candidate.apk; then
+                break
+              fi
+            done < mediafire_urls.txt
+          fi
+
           test -f base.apk
-          echo "Exact user base APK recovered."
+          echo 'Exact user base APK recovered and SHA-256 verified.'
 
       - name: Find Android build tools
         shell: bash
         run: |
           set -euxo pipefail
-          BT="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
+          sdkmanager 'build-tools;36.0.0'
+          BT="$ANDROID_HOME/build-tools/36.0.0"
           echo "BT=$BT" >> "$GITHUB_ENV"
           "$BT/apksigner" version
           "$BT/zipalign" -h >/dev/null 2>&1 || true
