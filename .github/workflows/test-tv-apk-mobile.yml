@@ -1,0 +1,115 @@
+name: Test TV APK on phone emulator
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android36-launch-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Download exact TV base APK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          EXPECTED='f7180baa72e1ab0693b47536617595dd16987aa28b34d5e7e496bfd43a72cef3'
+          rm -f base.apk candidate.apk
+          for URL in \
+            'https://aftv.news/9764306' \
+            'https://go.aftvnews.com/9764306'; do
+            echo "Trying $URL"
+            if curl -fL --retry 2 --connect-timeout 20 --max-time 180 "$URL" -o candidate.apk; then
+              if unzip -t candidate.apk >/dev/null 2>&1; then
+                GOT="$(sha256sum candidate.apk | awk '{print $1}')"
+                echo "Downloaded SHA256: $GOT"
+                if [ "$GOT" = "$EXPECTED" ]; then
+                  mv candidate.apk base.apk
+                  break
+                fi
+              fi
+            fi
+            rm -f candidate.apk
+          done
+          test -f base.apk
+          echo "Exact user base APK recovered."
+
+      - name: Find Android build tools
+        shell: bash
+        run: |
+          set -euxo pipefail
+          BT="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
+          echo "BT=$BT" >> "$GITHUB_ENV"
+          "$BT/apksigner" version
+          "$BT/zipalign" -h >/dev/null 2>&1 || true
+
+      - name: Create test signing key
+        shell: bash
+        run: |
+          keytool -genkeypair -v \
+            -keystore mobile-test.jks \
+            -storepass android -keypass android \
+            -alias mobiletest -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname 'CN=Mobile Adaptation Test,O=Local Test,C=MX'
+
+      - name: Build no-op re-signed control APK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cp base.apk noop-unsigned.apk
+          zip -d noop-unsigned.apk 'META-INF/*.RSA' 'META-INF/*.DSA' 'META-INF/*.EC' 'META-INF/*.SF' 'META-INF/MANIFEST.MF' || true
+          "$BT/zipalign" -f -p 4 noop-unsigned.apk noop-aligned.apk
+          "$BT/apksigner" sign \
+            --ks mobile-test.jks --ks-pass pass:android --key-pass pass:android \
+            --out noop-resigned.apk noop-aligned.apk
+          "$BT/apksigner" verify --verbose noop-resigned.apk
+
+      - name: Build minimal sensor-orientation APK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 tools/patch_tv_manifest.py base.apk sensor-unsigned.apk --orientation 4
+          "$BT/zipalign" -f -p 4 sensor-unsigned.apk sensor-aligned.apk
+          "$BT/apksigner" sign \
+            --ks mobile-test.jks --ks-pass pass:android --key-pass pass:android \
+            --out sensor-mobile.apk sensor-aligned.apk
+          "$BT/apksigner" verify --verbose sensor-mobile.apk
+
+      - name: Emulator launch tests (Android 16 / API 36)
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          script: bash tools/run_apk_launch_tests.sh
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-apk-diagnostics
+          if-no-files-found: ignore
+          path: |
+            base.apk
+            noop-resigned.apk
+            sensor-mobile.apk
+            diagnostics/**
