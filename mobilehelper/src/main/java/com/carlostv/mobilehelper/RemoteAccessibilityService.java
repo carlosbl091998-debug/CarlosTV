@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -19,7 +20,11 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class RemoteAccessibilityService extends AccessibilityService {
+    private static final String TAG = "XuperMobileHelper";
     private static final String XUPER_PACKAGE = "com.android.mgstv";
+    private static final int CELL_DP = 46;
+    private static final int OVERLAY_WIDTH_DP = 150;
+    private static final int OVERLAY_HEIGHT_DP = 184;
 
     private WindowManager windowManager;
     private LinearLayout overlay;
@@ -30,10 +35,9 @@ public class RemoteAccessibilityService extends AccessibilityService {
         super.onServiceConnected();
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         buildOverlay();
+        Log.i(TAG, "SERVICE_CONNECTED");
         AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root != null && root.getPackageName() != null && XUPER_PACKAGE.contentEquals(root.getPackageName())) {
-            showOverlay();
-        }
+        if (isXuperRoot(root)) showOverlay();
     }
 
     @Override
@@ -42,7 +46,8 @@ public class RemoteAccessibilityService extends AccessibilityService {
         String pkg = event.getPackageName().toString();
         if (XUPER_PACKAGE.equals(pkg)) {
             showOverlay();
-        } else if (!getPackageName().equals(pkg) && event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+        } else if (!getPackageName().equals(pkg)
+                && event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             hideOverlay();
         }
     }
@@ -62,7 +67,7 @@ public class RemoteAccessibilityService extends AccessibilityService {
         overlay = new LinearLayout(this);
         overlay.setOrientation(LinearLayout.VERTICAL);
         overlay.setPadding(dp(6), dp(6), dp(6), dp(6));
-        overlay.setBackgroundColor(Color.argb(205, 20, 20, 20));
+        overlay.setBackgroundColor(Color.argb(195, 20, 20, 20));
         overlay.setContentDescription("Control táctil Xuper");
 
         LinearLayout top = new LinearLayout(this);
@@ -72,14 +77,17 @@ public class RemoteAccessibilityService extends AccessibilityService {
         TextView label = new TextView(this);
         label.setText("Xuper");
         label.setTextColor(Color.WHITE);
-        label.setTextSize(12);
-        LinearLayout.LayoutParams labelLp = new LinearLayout.LayoutParams(0, dp(34), 1f);
+        label.setTextSize(11);
+        LinearLayout.LayoutParams labelLp = new LinearLayout.LayoutParams(0, dp(32), 1f);
         top.addView(label, labelLp);
 
         Button back = smallButton("Atrás", "Volver");
-        back.setOnClickListener(v -> performGlobalAction(GLOBAL_ACTION_BACK));
-        top.addView(back, new LinearLayout.LayoutParams(dp(72), dp(34)));
-        overlay.addView(top, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(36)));
+        back.setOnClickListener(v -> {
+            Log.i(TAG, "PRESS:Volver");
+            performGlobalAction(GLOBAL_ACTION_BACK);
+        });
+        top.addView(back, new LinearLayout.LayoutParams(dp(60), dp(32)));
+        overlay.addView(top, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(34)));
 
         GridLayout pad = new GridLayout(this);
         pad.setColumnCount(3);
@@ -95,24 +103,27 @@ public class RemoteAccessibilityService extends AccessibilityService {
         addPadSpacer(pad, 2, 0);
         addPadButton(pad, "↓", "Mover abajo", 2, 1, () -> move(Direction.DOWN));
         addPadSpacer(pad, 2, 2);
-        overlay.addView(pad, new LinearLayout.LayoutParams(dp(174), dp(156)));
+        overlay.addView(pad, new LinearLayout.LayoutParams(dp(CELL_DP * 3), dp(CELL_DP * 3)));
     }
 
     private void addPadButton(GridLayout grid, String text, String description, int row, int col, Runnable action) {
         Button b = smallButton(text, description);
-        b.setTextSize("OK".equals(text) ? 13 : 24);
-        b.setOnClickListener(v -> action.run());
+        b.setTextSize("OK".equals(text) ? 11 : 20);
+        b.setOnClickListener(v -> {
+            Log.i(TAG, "PRESS:" + description);
+            action.run();
+        });
         GridLayout.LayoutParams lp = new GridLayout.LayoutParams(GridLayout.spec(row), GridLayout.spec(col));
-        lp.width = dp(58);
-        lp.height = dp(52);
+        lp.width = dp(CELL_DP);
+        lp.height = dp(CELL_DP);
         grid.addView(b, lp);
     }
 
     private void addPadSpacer(GridLayout grid, int row, int col) {
         View v = new View(this);
         GridLayout.LayoutParams lp = new GridLayout.LayoutParams(GridLayout.spec(row), GridLayout.spec(col));
-        lp.width = dp(58);
-        lp.height = dp(52);
+        lp.width = dp(CELL_DP);
+        lp.height = dp(CELL_DP);
         grid.addView(v, lp);
     }
 
@@ -120,7 +131,7 @@ public class RemoteAccessibilityService extends AccessibilityService {
         Button b = new Button(this);
         b.setText(text);
         b.setAllCaps(false);
-        b.setTextSize(12);
+        b.setTextSize(11);
         b.setPadding(0, 0, 0, 0);
         b.setContentDescription(description);
         b.setMinWidth(0);
@@ -130,17 +141,17 @@ public class RemoteAccessibilityService extends AccessibilityService {
 
     private WindowManager.LayoutParams overlayParams() {
         WindowManager.LayoutParams p = new WindowManager.LayoutParams(
-                dp(186),
-                dp(204),
+                dp(OVERLAY_WIDTH_DP),
+                dp(OVERLAY_HEIGHT_DP),
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                         | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                         | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT);
         p.gravity = Gravity.END | Gravity.BOTTOM;
-        p.x = dp(8);
-        p.y = dp(20);
-        p.alpha = 0.92f;
+        p.x = dp(6);
+        p.y = dp(12);
+        p.alpha = 0.90f;
         return p;
     }
 
@@ -149,16 +160,29 @@ public class RemoteAccessibilityService extends AccessibilityService {
         try {
             windowManager.addView(overlay, overlayParams());
             overlayAttached = true;
-        } catch (Exception ignored) {}
+            Log.i(TAG, "OVERLAY_SHOWN");
+        } catch (Exception e) {
+            Log.e(TAG, "OVERLAY_SHOW_FAILED", e);
+        }
     }
 
     private void hideOverlay() {
         if (!overlayAttached || windowManager == null || overlay == null) return;
         try { windowManager.removeView(overlay); } catch (Exception ignored) {}
         overlayAttached = false;
+        Log.i(TAG, "OVERLAY_HIDDEN");
     }
 
     private enum Direction { UP, DOWN, LEFT, RIGHT }
+
+    private int nativeFocusDirection(Direction direction) {
+        switch (direction) {
+            case UP: return View.FOCUS_UP;
+            case DOWN: return View.FOCUS_DOWN;
+            case LEFT: return View.FOCUS_LEFT;
+            default: return View.FOCUS_RIGHT;
+        }
+    }
 
     private void move(Direction direction) {
         AccessibilityNodeInfo root = getRootInActiveWindow();
@@ -175,6 +199,16 @@ public class RemoteAccessibilityService extends AccessibilityService {
             return;
         }
 
+        // Prefer the focus graph already defined by the TV application.
+        try {
+            AccessibilityNodeInfo nativeNext = current.focusSearch(nativeFocusDirection(direction));
+            if (nativeNext != null && nativeNext.isVisibleToUser()) {
+                focusNode(nativeNext);
+                return;
+            }
+        } catch (Exception ignored) {}
+
+        // Fallback for screens where Xuper does not expose an explicit focus graph.
         Rect cr = new Rect();
         current.getBoundsInScreen(cr);
         if (cr.isEmpty()) {
