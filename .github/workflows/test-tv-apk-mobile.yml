@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  android36-launch-test:
+  phone-launch-test:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -22,12 +22,12 @@ jobs:
 
       - uses: android-actions/setup-android@v3
 
-      - name: Download same package/version mirror
+      - name: Download same Xuper 4.34.5 package mirror
         shell: bash
         run: |
           set -euxo pipefail
           PAGE='https://www.mediafire.com/file/azgvigddkzvrss4/Xuper_4.34.5_%28com.android.mgstv%29.apk/file'
-          curl -fL -A 'Mozilla/5.0' "$PAGE" -o mf.html
+          curl -fL --retry 3 -A 'Mozilla/5.0' "$PAGE" -o mf.html
           python3 - <<'PY' > direct.txt
           import html,re
           t=html.unescape(open('mf.html',encoding='utf-8',errors='ignore').read()).replace('\\/','/')
@@ -38,28 +38,43 @@ jobs:
                   print(m.group(1)); break
           PY
           test -s direct.txt
-          curl -fL -A 'Mozilla/5.0' "$(cat direct.txt)" -o base.apk
+          curl -fL --retry 3 -A 'Mozilla/5.0' "$(cat direct.txt)" -o base.apk
           unzip -t base.apk >/dev/null
           sha256sum base.apk | tee mirror-file-sha.txt
 
-      - name: Compute signature-independent content fingerprint
+      - name: Verify mirror matches user base contents
         shell: bash
         run: |
+          set -euxo pipefail
           python3 - <<'PY' | tee mirror-content.txt
-          import hashlib,zipfile
-          p='base.apk'
-          with zipfile.ZipFile(p) as z:
+          import hashlib,sys,zipfile
+          expected_logical='165d2aeefe3bcc4b79c839708d82d41fd8e0dc6259acd3116cf8a3a00ea8c25f'
+          expected={
+            'AndroidManifest.xml':'d20a21acc604b1b055a5c5130d5dbf36219d4923a634b4a85650cf549aa2afe8',
+            'classes.dex':'73de3ce36e5983dbc13be7b42d49a8ef0e8ecc42693f9d9912d3eda4f535f9cc',
+            'resources.arsc':'37f6dc0f28ecab6df6a1f9473e9881db62832fc822782a567246541b442d84b2',
+            'assets/ijm_lib/arm64-v8a/libexec.so':'512180fa7a5981837bf101474ea76168965dfa2bc367f141f750ac6e17fb7bae',
+            'assets/ijm_lib/arm64-v8a/libexecmain.so':'a0864c7be8520aca7e76377cb87542c446fd1704214e6626ee715afedd2a1ee1',
+          }
+          with zipfile.ZipFile('base.apk') as z:
               names=sorted(n for n in z.namelist() if not n.upper().startswith('META-INF/'))
               h=hashlib.sha256()
               for n in names:
                   d=z.read(n)
                   h.update(n.encode()+b'\0'+hashlib.sha256(d).digest())
+              logical=h.hexdigest()
               print('entries_total=',len(z.namelist()))
               print('entries_nonmeta=',len(names))
-              print('logical_sha256=',h.hexdigest())
-              for n in ['AndroidManifest.xml','classes.dex','resources.arsc','assets/ijm_lib/arm64-v8a/libexec.so','assets/ijm_lib/arm64-v8a/libexecmain.so']:
-                  d=z.read(n)
-                  print(n,len(d),hashlib.sha256(d).hexdigest())
+              print('logical_sha256=',logical)
+              ok=(logical==expected_logical)
+              for n,want in expected.items():
+                  got=hashlib.sha256(z.read(n)).hexdigest()
+                  print(n,got,'MATCH' if got==want else 'MISMATCH')
+                  ok &= got==want
+              if not ok:
+                  print('Mirror does not match the user-supplied base APK contents.', file=sys.stderr)
+                  sys.exit(42)
+          print('CONTENT_MATCH_OK')
           PY
 
       - name: Install Android build tools
@@ -69,7 +84,7 @@ jobs:
           sdkmanager 'build-tools;36.0.0'
           echo "BT=$ANDROID_HOME/build-tools/36.0.0" >> "$GITHUB_ENV"
 
-      - name: Create test signing key
+      - name: Create isolated test signing key
         shell: bash
         run: |
           keytool -genkeypair -v -keystore mobile-test.jks -storepass android -keypass android -alias mobiletest -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Mobile Adaptation Test,O=Local Test,C=MX'
@@ -84,33 +99,39 @@ jobs:
           "$BT/apksigner" sign --ks mobile-test.jks --ks-pass pass:android --key-pass pass:android --out noop-resigned.apk noop-aligned.apk
           "$BT/apksigner" verify --verbose noop-resigned.apk
 
-      - name: Build minimal sensor-orientation candidate
+      - name: Build minimal mobile-orientation candidate
         shell: bash
         run: |
           set -euxo pipefail
           python3 tools/patch_tv_manifest.py base.apk sensor-unsigned.apk --orientation 4
           "$BT/zipalign" -f -p 4 sensor-unsigned.apk sensor-aligned.apk
-          "$BT/apksigner" sign --ks mobile-test.jks --ks-pass pass:android --key-pass pass:android --out sensor-mobile.apk sensor-aligned.apk
-          "$BT/apksigner" verify --verbose sensor-mobile.apk
+          "$BT/apksigner" sign --ks mobile-test.jks --ks-pass pass:android --key-pass pass:android --out Xuper_Movil_sensor_test.apk sensor-aligned.apk
+          "$BT/apksigner" verify --verbose Xuper_Movil_sensor_test.apk
 
-      - name: Emulator launch tests Android 16 phone profile
+      - name: Emulator launch tests on phone profile with ARM translation
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 36
+          api-level: 35
           target: google_apis
           arch: x86_64
           profile: pixel_6
           disable-animations: true
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: bash tools/run_apk_launch_tests.sh
+          force-avd-creation: false
+          emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          script: |
+            cp Xuper_Movil_sensor_test.apk sensor-mobile.apk
+            bash tools/run_apk_launch_tests.sh
 
-      - name: Upload diagnostics
+      - name: Upload diagnostics and candidate
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mobile-apk-diagnostics
+          name: mobile-apk-diagnostics-api35
           if-no-files-found: ignore
+          retention-days: 7
           path: |
             mirror-file-sha.txt
             mirror-content.txt
             diagnostics/**
+            noop-resigned.apk
+            Xuper_Movil_sensor_test.apk
