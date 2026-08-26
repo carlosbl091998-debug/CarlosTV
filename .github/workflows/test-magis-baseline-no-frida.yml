@@ -2,7 +2,7 @@ name: Test Magis 6.2.4 baseline no Frida
 
 on:
   push:
-    branches: [ magis-runtime-spawn-dump-v4 ]
+    branches: [ magis-runtime-spawn-dump-v4, magis-runtime-baseline-v5 ]
   workflow_dispatch:
 
 concurrency:
