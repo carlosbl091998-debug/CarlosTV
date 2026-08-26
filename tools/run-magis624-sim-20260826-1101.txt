@@ -1,0 +1,1 @@
+Trigger Android 16 simulation for Magis 6.2.4 update-gate patch tests.
