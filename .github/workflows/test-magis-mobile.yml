@@ -1,47 +1,44 @@
-name: Test Magis official mobile update chain
+name: Test official Magis 6.2.4 in Mexico GPS
 
 on:
-  pull_request:
-    branches: [ main ]
+  push:
+    branches: [ magis-mobile-recovery ]
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
-  validate-magis-official-update:
+  mexico-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
       - uses: android-actions/setup-android@v3
 
-      - name: Download signed Magis bootstrap candidate
-        shell: bash
-        run: |
-          set -euxo pipefail
-          curl -fL --retry 4 --retry-all-errors -A 'Mozilla/5.0' \
-            'https://tinyurl.com/Magis-TV-File' -o magis-current.apk
-          unzip -t magis-current.apk >/dev/null
-          sha256sum magis-current.apk | tee magis-current.sha256
+      - name: Download previously tested official 6.2.4
+        uses: actions/download-artifact@v4
+        with:
+          name: xuper-mobile-official-successor-tested
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 32975484926
+          path: input
 
-      - name: Validate package and signing identity
+      - name: Validate APK identity
         shell: bash
         run: |
           set -euxo pipefail
+          APK=input/Xuper-Mobile-Official-Successor-Tested.apk
+          test -s "$APK"
+          unzip -t "$APK" >/dev/null
           AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
-          "$AAPT" dump badging magis-current.apk | tee magis-badging.txt
-          grep -q "package: name='com.msandroid.mobile'" magis-badging.txt
-          "$APKSIGNER" verify --verbose --print-certs magis-current.apk | tee magis-signing.txt
-          mkdir -p diagnostics-update
-          cp magis-current.sha256 magis-badging.txt magis-signing.txt diagnostics-update/
+          "$AAPT" dump badging "$APK" | tee badging.txt
+          grep -q "package: name='com.msandroid.mobile' versionCode='60204' versionName='6.2.4'" badging.txt
+          "$APKSIGNER" verify --verbose --print-certs "$APK" | tee signing.txt
+          sha256sum "$APK" | tee sha256.txt
 
       - name: Enable KVM
         shell: bash
@@ -49,9 +46,8 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-          ls -l /dev/kvm
 
-      - name: Follow Magis official update flow and smoke test result
+      - name: Android 16 Pixel 6 Mexico smoke test
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 36
@@ -61,32 +57,41 @@ jobs:
           disable-animations: true
           force-avd-creation: false
           emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
-          script: bash tools/test_magis_update_chain.sh
+          script: |
+            set -eux
+            mkdir -p diagnostics-mx
+            APK=input/Xuper-Mobile-Official-Successor-Tested.apk
+            PKG=com.msandroid.mobile
+            adb uninstall "$PKG" >/dev/null 2>&1 || true
+            adb logcat -c || true
+            adb install -r "$APK" | tee diagnostics-mx/install.txt
+            adb emu geo fix -99.1332 19.4326 || true
+            adb shell appops set "$PKG" android:mock_location allow 2>/dev/null || true
+            adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || true
+            sleep 15
+            P15=$(adb shell pidof "$PKG" | tr -d '\r' || true)
+            adb shell uiautomator dump /sdcard/ui15.xml >/dev/null 2>&1 || true
+            adb pull /sdcard/ui15.xml diagnostics-mx/ui15.xml >/dev/null 2>&1 || true
+            adb exec-out screencap -p > diagnostics-mx/screen15.png || true
+            sleep 45
+            P60=$(adb shell pidof "$PKG" | tr -d '\r' || true)
+            adb shell uiautomator dump /sdcard/ui60.xml >/dev/null 2>&1 || true
+            adb pull /sdcard/ui60.xml diagnostics-mx/ui60.xml >/dev/null 2>&1 || true
+            adb exec-out screencap -p > diagnostics-mx/screen60.png || true
+            adb logcat -d -v threadtime > diagnostics-mx/logcat.txt || true
+            echo "pid15=${P15:-DEAD} pid60=${P60:-DEAD}" | tee diagnostics-mx/result.txt
+            grep -Eio 'Due to copyright restrictions[^<]*|update[^<]*|upgrade[^<]*|new version[^<]*|discontinued[^<]*' diagnostics-mx/ui15.xml diagnostics-mx/ui60.xml | tee diagnostics-mx/dialog-text.txt || true
+            test -n "$P15"
+            test -n "$P60"
 
-      - name: Preserve only the final officially installed APK
-        if: success()
-        shell: bash
-        run: |
-          set -euxo pipefail
-          test -s diagnostics-update/Magis-Mobile-Final-Tested.apk
-          mv diagnostics-update/Magis-Mobile-Final-Tested.apk Xuper-Mobile-Official-Successor-Tested.apk
-          sha256sum Xuper-Mobile-Official-Successor-Tested.apk | tee Xuper-Mobile-Official-Successor-Tested.sha256
-          find diagnostics-update -type f -name '*.apk' -delete 2>/dev/null || true
-
-      - name: Remove APK binaries on failed runs
-        if: failure()
-        shell: bash
-        run: |
-          find diagnostics-update -type f -name '*.apk' -delete 2>/dev/null || true
-
-      - name: Upload tested official successor and diagnostics
+      - name: Upload Mexico diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: xuper-mobile-official-successor-tested
+          name: magis-624-mexico-android16
           retention-days: 7
-          if-no-files-found: warn
           path: |
-            Xuper-Mobile-Official-Successor-Tested.apk
-            Xuper-Mobile-Official-Successor-Tested.sha256
-            diagnostics-update/**
+            diagnostics-mx/**
+            badging.txt
+            signing.txt
+            sha256.txt
