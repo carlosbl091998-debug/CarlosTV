@@ -1,5 +1,6 @@
 name: Test Magis variants one by one
 
+# Triggered after applying magis-frida-spawn-v2 to main on 2026-08-26.
 on:
   push:
     branches: [ main ]
