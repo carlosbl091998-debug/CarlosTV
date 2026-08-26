@@ -1,0 +1,29 @@
+name: Static check alternate Magis candidate
+
+on:
+  push:
+    branches: [magis-public-static-check]
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: android-actions/setup-android@v3
+      - name: Download and inspect
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 --connect-timeout 20 --max-time 180 'https://d.imagstvapk.com/imagstvapk.com_magis-celular_vlatest.apk' -o candidate.apk
+          sha256sum candidate.apk | tee static-sha.txt
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          "$AAPT" dump badging candidate.apk | head -40 | tee static-badging.txt
+          "$APKSIGNER" verify --print-certs candidate.apk | tee static-cert.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: magis-public-static
+          path: static-*.txt
+          retention-days: 2
