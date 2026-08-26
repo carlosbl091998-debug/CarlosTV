@@ -24,23 +24,43 @@ jobs:
           mkdir -p "$HOME/.android/avd"
           echo no | avdmanager create avd -n pixel6_api36 -k 'system-images;android-36;google_apis;x86_64' -d pixel_6 --force
           "$ANDROID_HOME/emulator/emulator" -list-avds
-      - name: Pack portable runtime
+      - name: Pack and split portable runtime
         shell: bash
         run: |
           set -euxo pipefail
-          rm -rf /tmp/android-portable
+          rm -rf /tmp/android-portable /tmp/runtime-part-*
           mkdir -p /tmp/android-portable/sdk/system-images/android-36/google_apis /tmp/android-portable/home/.android
           cp -a "$ANDROID_HOME/emulator" /tmp/android-portable/sdk/
           cp -a "$ANDROID_HOME/platform-tools" /tmp/android-portable/sdk/
           cp -a "$ANDROID_HOME/system-images/android-36/google_apis/x86_64" /tmp/android-portable/sdk/system-images/android-36/google_apis/
           cp -a "$HOME/.android/avd" /tmp/android-portable/home/.android/
-          du -sh /tmp/android-portable
           tar -C /tmp -I 'zstd -1 -T0' -cf /tmp/android-runtime-api36.tar.zst android-portable
-          ls -lh /tmp/android-runtime-api36.tar.zst
-      - name: Upload portable runtime
+          sha256sum /tmp/android-runtime-api36.tar.zst | tee /tmp/android-runtime.sha256
+          split -d -a 2 -b 450M /tmp/android-runtime-api36.tar.zst /tmp/runtime-part-
+          ls -lh /tmp/runtime-part-* /tmp/android-runtime.sha256
+      - name: Upload runtime part 00
+        uses: actions/upload-artifact@v4
+        with: {name: android-runtime-part-00, retention-days: 2, compression-level: 0, path: /tmp/runtime-part-00}
+      - name: Upload runtime part 01
+        uses: actions/upload-artifact@v4
+        with: {name: android-runtime-part-01, retention-days: 2, compression-level: 0, path: /tmp/runtime-part-01}
+      - name: Upload runtime part 02
+        uses: actions/upload-artifact@v4
+        with: {name: android-runtime-part-02, retention-days: 2, compression-level: 0, path: /tmp/runtime-part-02}
+      - name: Upload runtime part 03
+        uses: actions/upload-artifact@v4
+        with: {name: android-runtime-part-03, retention-days: 2, compression-level: 0, path: /tmp/runtime-part-03}
+      - name: Upload runtime part 04
+        uses: actions/upload-artifact@v4
+        with: {name: android-runtime-part-04, retention-days: 2, compression-level: 0, path: /tmp/runtime-part-04}
+      - name: Upload runtime part 05
         uses: actions/upload-artifact@v4
         with:
-          name: android-runtime-api36-portable
+          name: android-runtime-part-05
           retention-days: 2
           compression-level: 0
-          path: /tmp/android-runtime-api36.tar.zst
+          if-no-files-found: ignore
+          path: /tmp/runtime-part-05
+      - name: Upload runtime checksum
+        uses: actions/upload-artifact@v4
+        with: {name: android-runtime-sha256, retention-days: 2, compression-level: 0, path: /tmp/android-runtime.sha256}
