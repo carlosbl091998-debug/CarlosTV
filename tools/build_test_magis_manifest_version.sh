@@ -5,14 +5,15 @@ PKG='com.msandroid.mobile'
 SRC='Magis-6.2.4.apk'
 OUT='diagnostics-manifest-version'
 WORK='/tmp/magis-manifest-work'
-VERSION_CODE='900000'
+VERSION_CODE='60505'
+CANDIDATE="$OUT/Magis-6.2.4-ManifestVersion60505-Tested.apk"
 mkdir -p "$OUT" "$WORK/patch"
 
 APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
 ZIPALIGN=$(find "$ANDROID_HOME/build-tools" -type f -name zipalign | sort -V | tail -1)
 AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)
 
-# Patch the compiled AndroidManifest.xml directly; do not rebuild resources or DEX.
+# Patch only the compiled AndroidManifest.xml. Keep protected DEX/resources byte-identical.
 unzip -p "$SRC" AndroidManifest.xml > "$WORK/patch/AndroidManifest.xml"
 cp "$WORK/patch/AndroidManifest.xml" "$OUT/AndroidManifest.binary.before"
 python3 - "$WORK/patch/AndroidManifest.xml" "$VERSION_CODE" > "$OUT/binary-manifest-patch.txt" <<'PY'
@@ -36,7 +37,6 @@ while o+8<=len(b):
         raise SystemExit(f'bad chunk at {o}: type={typ:#x} hsz={hsz} size={size}')
     if typ==RES_XML_RESOURCE_MAP_TYPE:
         resource_map=[u32(x) for x in range(o+hsz,o+size,4)]
-        print(f'resource_map_entries={len(resource_map)}')
     elif typ==RES_XML_START_ELEMENT_TYPE:
         ext=o+16
         if ext+20<=o+size:
@@ -61,11 +61,9 @@ open(p,'wb').write(b)
 PY
 cp "$WORK/patch/AndroidManifest.xml" "$OUT/AndroidManifest.binary.after"
 
-# Update only AndroidManifest.xml inside a copy of the original archive.
 cp "$SRC" "$WORK/candidate-unsigned.apk"
 (cd "$WORK/patch" && zip -q -u "$WORK/candidate-unsigned.apk" AndroidManifest.xml)
 
-# Runtime-sensitive payloads must remain byte-identical.
 for entry in classes.dex resources.arsc; do
   unzip -p "$SRC" "$entry" | sha256sum | awk '{print $1}' > "$OUT/${entry}.source.sha256"
   unzip -p "$WORK/candidate-unsigned.apk" "$entry" | sha256sum | awk '{print $1}' > "$OUT/${entry}.candidate.sha256"
@@ -79,11 +77,11 @@ echo 'RESOURCES_IDENTICAL=PASS' | tee -a "$OUT/result.txt"
 zip -q -d "$WORK/candidate-unsigned.apk" 'META-INF/*.RSA' 'META-INF/*.DSA' 'META-INF/*.EC' 'META-INF/*.SF' 'META-INF/MANIFEST.MF' >/dev/null 2>&1 || true
 keytool -genkeypair -noprompt -keystore /tmp/magis-manifest.jks -storepass android -keypass android -alias patch -dname 'CN=MagisManifestCandidate,O=LocalTest,C=MX' -keyalg RSA -keysize 2048 -validity 10000 >/dev/null 2>&1 || true
 "$ZIPALIGN" -f -p 4 "$WORK/candidate-unsigned.apk" "$WORK/aligned.apk"
-"$APKSIGNER" sign --ks /tmp/magis-manifest.jks --ks-key-alias patch --ks-pass pass:android --key-pass pass:android --out "$OUT/Magis-6.2.4-ManifestVersion900000-Tested.apk" "$WORK/aligned.apk"
-"$APKSIGNER" verify --verbose "$OUT/Magis-6.2.4-ManifestVersion900000-Tested.apk" > "$OUT/signature-verify.txt"
-"$AAPT" dump badging "$OUT/Magis-6.2.4-ManifestVersion900000-Tested.apk" > "$OUT/badging.txt"
-grep -q "versionCode='900000'" "$OUT/badging.txt"
-sha256sum "$OUT/Magis-6.2.4-ManifestVersion900000-Tested.apk" > "$OUT/candidate.sha256"
+"$APKSIGNER" sign --ks /tmp/magis-manifest.jks --ks-key-alias patch --ks-pass pass:android --key-pass pass:android --out "$CANDIDATE" "$WORK/aligned.apk"
+"$APKSIGNER" verify --verbose "$CANDIDATE" > "$OUT/signature-verify.txt"
+"$AAPT" dump badging "$CANDIDATE" > "$OUT/badging.txt"
+grep -q "versionCode='60505'" "$OUT/badging.txt"
+sha256sum "$CANDIDATE" > "$OUT/candidate.sha256"
 
 capture_diag() {
   adb logcat -d -v threadtime > "$OUT/logcat.txt" 2>/dev/null || true
@@ -94,7 +92,7 @@ trap capture_diag EXIT
 adb wait-for-device
 adb uninstall "$PKG" >/dev/null 2>&1 || true
 adb logcat -c || true
-if ! adb install -g "$OUT/Magis-6.2.4-ManifestVersion900000-Tested.apk" > "$OUT/install.txt" 2>&1; then
+if ! adb install -g "$CANDIDATE" > "$OUT/install.txt" 2>&1; then
   echo 'INSTALL=FAIL' | tee -a "$OUT/result.txt"; exit 12;
 fi
 echo 'INSTALL=PASS' | tee -a "$OUT/result.txt"
@@ -116,9 +114,7 @@ check_point() {
   if [ -n "$pid" ]; then echo "ALIVE_${sec}=PASS" | tee -a "$OUT/result.txt"; else echo "ALIVE_${sec}=FAIL" | tee -a "$OUT/result.txt"; return 1; fi
   if printf '%s' "$top" | grep -q 'MainAty'; then echo "MAINATY_${sec}=PASS" | tee -a "$OUT/result.txt"; else echo "MAINATY_${sec}=FAIL" | tee -a "$OUT/result.txt"; return 1; fi
   if [ -s "$OUT/window-${sec}s.xml" ] && grep -Eiq 'actualiz|update|upgrade|new version|nova vers|atualiz|versi[oó]n disponible|descargar.*versi' "$OUT/window-${sec}s.xml"; then
-    echo "UPDATE_GATE_${sec}=FAIL" | tee -a "$OUT/result.txt"
-    grep -Eio '.{0,100}(actualiz|update|upgrade|new version|nova vers|atualiz).{0,160}' "$OUT/window-${sec}s.xml" | head -20 > "$OUT/update-hits-${sec}s.txt" || true
-    return 1
+    echo "UPDATE_GATE_${sec}=FAIL" | tee -a "$OUT/result.txt"; return 1
   fi
   echo "UPDATE_GATE_${sec}=PASS" | tee -a "$OUT/result.txt"
 }
