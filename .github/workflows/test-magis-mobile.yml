@@ -68,9 +68,8 @@ jobs:
             mkdir -p diagnostics
             timeout 45s adb install -r magis-current.apk | tee diagnostics/install.txt
             adb shell am force-stop com.msandroid.mobile || true
-            LAUNCH=$(adb shell cmd package resolve-activity --brief -c android.intent.category.LAUNCHER com.msandroid.mobile | tr -d '\r' | tail -1)
+            LAUNCH='com.msandroid.mobile/com.mobile.brasiltv.activity.SplashAty'
             echo "launcher=$LAUNCH" | tee diagnostics/runtime.txt
-            test -n "$LAUNCH"
             timeout 20s adb shell am start -W -n "$LAUNCH" | tee diagnostics/start.txt || true
 
             sleep 10
@@ -88,6 +87,7 @@ jobs:
             timeout 10s adb exec-out screencap -p > diagnostics/screen-30.png || true
             timeout 10s adb logcat -d -v threadtime | grep -Ei 'com\.msandroid\.mobile|FATAL EXCEPTION|AndroidRuntime|SIGKILL|EXIT_SELF|UnsatisfiedLinkError' | tail -500 > diagnostics/logcat-relevant.txt || true
 
+            adb shell dumpsys package com.msandroid.mobile | grep -E 'versionName=|versionCode=' | head -10 > diagnostics/installed-version.txt || true
             python3 - <<'PY'
             from pathlib import Path
             import re
