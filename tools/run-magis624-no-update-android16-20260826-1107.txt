@@ -1,0 +1,1 @@
+Trigger exact Magis 6.2.4 update-gate simulation on Pixel 6 / Android 16.
