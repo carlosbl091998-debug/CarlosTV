@@ -11,7 +11,7 @@ permissions:
 jobs:
   export-runtime:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: android-actions/setup-android@v3
@@ -20,12 +20,7 @@ jobs:
         run: |
           set -euxo pipefail
           yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager --install \
-            'platform-tools' \
-            'emulator' \
-            'platforms;android-36' \
-            'build-tools;37.0.0' \
-            'system-images;android-36;google_apis;x86_64'
+          sdkmanager --install 'platform-tools' 'emulator' 'system-images;android-36;google_apis;x86_64'
           mkdir -p "$HOME/.android/avd"
           echo no | avdmanager create avd -n pixel6_api36 -k 'system-images;android-36;google_apis;x86_64' -d pixel_6 --force
           "$ANDROID_HOME/emulator/emulator" -list-avds
@@ -33,16 +28,14 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          mkdir -p /tmp/android-portable/sdk /tmp/android-portable/home/.android
+          rm -rf /tmp/android-portable
+          mkdir -p /tmp/android-portable/sdk/system-images/android-36/google_apis /tmp/android-portable/home/.android
           cp -a "$ANDROID_HOME/emulator" /tmp/android-portable/sdk/
           cp -a "$ANDROID_HOME/platform-tools" /tmp/android-portable/sdk/
-          cp -a "$ANDROID_HOME/platforms" /tmp/android-portable/sdk/
-          cp -a "$ANDROID_HOME/build-tools/37.0.0" /tmp/android-portable/sdk/build-tools-37.0.0
-          mkdir -p /tmp/android-portable/sdk/system-images/android-36/google_apis
           cp -a "$ANDROID_HOME/system-images/android-36/google_apis/x86_64" /tmp/android-portable/sdk/system-images/android-36/google_apis/
           cp -a "$HOME/.android/avd" /tmp/android-portable/home/.android/
-          cp -a "$HOME/.android/adbkey"* /tmp/android-portable/home/.android/ 2>/dev/null || true
-          tar -C /tmp -I 'zstd -3 -T0' -cf /tmp/android-runtime-api36.tar.zst android-portable
+          du -sh /tmp/android-portable
+          tar -C /tmp -I 'zstd -1 -T0' -cf /tmp/android-runtime-api36.tar.zst android-portable
           ls -lh /tmp/android-runtime-api36.tar.zst
       - name: Upload portable runtime
         uses: actions/upload-artifact@v4
