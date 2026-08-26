@@ -41,11 +41,22 @@ jobs:
           unzip -q /tmp/magis624.zip -d /tmp/magis624
           cp /tmp/magis624/Xuper-Mobile-Official-Successor-Tested.apk Magis-6.2.4.apk
           echo "${EXPECTED_SHA}  Magis-6.2.4.apk" | sha256sum -c -
-      - name: Install apktool
+      - name: Install Apktool 3.0.3
+        shell: bash
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq apktool
-          apktool --version
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/apktool-bin"
+          curl -fL --retry 4 --retry-all-errors \
+            https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar \
+            -o "$RUNNER_TEMP/apktool-bin/apktool.jar"
+          echo 'dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423  '"$RUNNER_TEMP"'/apktool-bin/apktool.jar' | sha256sum -c -
+          cat > "$RUNNER_TEMP/apktool-bin/apktool" <<'EOF'
+          #!/usr/bin/env bash
+          exec java -jar "$(dirname "$0")/apktool.jar" "$@"
+          EOF
+          chmod +x "$RUNNER_TEMP/apktool-bin/apktool"
+          echo "$RUNNER_TEMP/apktool-bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/apktool-bin/apktool" --version
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -66,6 +77,7 @@ jobs:
         run: |
           cat diagnostics-manifest-version/result.txt 2>/dev/null || true
           cat diagnostics-manifest-version/badging.txt 2>/dev/null | head -5 || true
+          tail -100 diagnostics-manifest-version/apktool-build.txt 2>/dev/null || true
       - name: Upload candidate and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
