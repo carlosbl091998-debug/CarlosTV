@@ -11,9 +11,21 @@ adb wait-for-device
 sleep 2
 
 adb shell settings put secure immersive_mode_confirmations confirmed >/dev/null 2>&1 || true
-adb shell pm grant "$PKG" android.permission.POST_NOTIFICATIONS >/dev/null 2>&1 || true
 
-uid=$(adb shell dumpsys package "$PKG" | sed -n 's/^[[:space:]]*userId=\([0-9]*\).*/\1/p' | head -1 | tr -d '\r')
+# Grant only normal runtime permissions requested by the app so Android's own
+# permission dialogs do not block the observation. Unsupported/legacy grants are ignored.
+adb shell dumpsys package "$PKG" > "$OUT/package.txt" || true
+awk '/requested permissions:/{f=1;next}/install permissions:/{f=0}f && /android\.permission\./{gsub(":",""); print $1}' "$OUT/package.txt" \
+  | sort -u > "$OUT/requested-permissions.txt" || true
+while IFS= read -r p; do
+  [ -n "$p" ] || continue
+  adb shell pm grant "$PKG" "$p" </dev/null >/dev/null 2>&1 || true
+done < "$OUT/requested-permissions.txt"
+
+uid=$(adb shell cmd package list packages -U 2>/dev/null | sed -n "s/^package:${PKG}[[:space:]]*uid:\([0-9]*\).*/\1/p" | head -1 | tr -d '\r')
+if [ -z "${uid:-}" ]; then
+  uid=$(adb shell dumpsys package "$PKG" | sed -n 's/^[[:space:]]*userId=\([0-9]*\).*/\1/p' | head -1 | tr -d '\r')
+fi
 echo "package=$PKG" | tee "$OUT/runtime-summary.txt"
 echo "uid=${uid:-unknown}" | tee -a "$OUT/runtime-summary.txt"
 
@@ -26,10 +38,42 @@ date +%s > "$OUT/launch-epoch.txt"
 adb shell am start -W -n "$PKG/com.interactive.brasiliptv.ui.activity.WelcomeActivity" \
   > "$OUT/start.txt" 2>&1 || true
 
+# Dismiss ordinary Android permission/tutorial dialogs if the OEM image still shows one.
+for i in $(seq 1 12); do
+  adb shell uiautomator dump /sdcard/dialog.xml >/dev/null 2>&1 || true
+  adb pull /sdcard/dialog.xml /tmp/dialog.xml >/dev/null 2>&1 || true
+  xy=$(python3 - <<'PY'
+import re, xml.etree.ElementTree as ET
+try:
+    root=ET.parse('/tmp/dialog.xml').getroot()
+except Exception:
+    raise SystemExit
+wanted={
+ 'allow','while using the app','only this time','ok','got it','continue','permitir',
+ 'mientras se usa la app','solo esta vez','aceptar','entendido','continuar'
+}
+for n in root.iter('node'):
+    text=(n.attrib.get('text') or '').strip().lower()
+    if text in wanted:
+        m=re.fullmatch(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', n.attrib.get('bounds',''))
+        if m:
+            x1,y1,x2,y2=map(int,m.groups())
+            print((x1+x2)//2,(y1+y2)//2)
+            break
+PY
+)
+  if [ -n "${xy:-}" ]; then
+    adb shell input tap $xy </dev/null >/dev/null 2>&1 || true
+    sleep 1
+  else
+    break
+  fi
+done
+
 # Sample kernel connection tables while the app initializes. Rows are later
 # filtered by the Linux UID assigned to the package, so no payload is captured.
 : > "$OUT/app-sockets-raw.txt"
-for i in $(seq 1 35); do
+for i in $(seq 1 50); do
   echo "--- sample $i ---" >> "$OUT/app-sockets-raw.txt"
   if [ -n "${uid:-}" ]; then
     adb shell "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null" \
@@ -39,7 +83,8 @@ for i in $(seq 1 35); do
 done
 
 pid=$(adb shell pidof "$PKG" 2>/dev/null | tr -d '\r' || true)
-echo "pid_after_35s=${pid:-DEAD}" | tee -a "$OUT/runtime-summary.txt"
+echo "pid_after_50s=${pid:-DEAD}" | tee -a "$OUT/runtime-summary.txt"
+adb shell dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity' | tail -3 > "$OUT/top-activity.txt" || true
 
 adb shell uiautomator dump /sdcard/xuper-ui.xml >/dev/null 2>&1 || true
 adb pull /sdcard/xuper-ui.xml "$OUT/ui.xml" >/dev/null 2>&1 || true
@@ -56,8 +101,8 @@ text=src.read_text(errors='ignore') if src.exists() else ''
 lines=[]
 for line in text.splitlines():
     low=line.lower()
-    if any(k in low for k in ('http://','https://',' dns','dnsresolver','okhttp','retrofit','socket','connect','host','ssl','tls','portal','stream')):
-        line=re.sub(r'(?i)(token|password|passwd|pwd|username|userToken|session|auth)=([^&\s]+)', r'\1=<redacted>', line)
+    if any(k in low for k in ('http://','https://',' dns','dnsresolver','okhttp','retrofit','socket','connect','host','ssl','tls','portal','stream','mgstv','brasiltv','xuper')):
+        line=re.sub(r'(?i)(token|password|passwd|pwd|username|usertoken|session|auth)=([^&\s]+)', r'\1=<redacted>', line)
         lines.append(line)
 out.write_text('\n'.join(lines), encoding='utf-8')
 PY
@@ -75,7 +120,6 @@ def dec4(h):
 
 def dec6(h):
     b=bytes.fromhex(h)
-    # Linux /proc/net/tcp6 stores each 32-bit word little-endian.
     b=b''.join(b[i:i+4][::-1] for i in range(0,16,4))
     return str(ipaddress.IPv6Address(b))
 
