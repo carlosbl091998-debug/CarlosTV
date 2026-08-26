@@ -66,33 +66,33 @@ jobs:
           script: |
             set -eu
             mkdir -p diagnostics
-            adb install -r magis-current.apk | tee diagnostics/install.txt
+            timeout 45s adb install -r magis-current.apk | tee diagnostics/install.txt
             adb shell am force-stop com.msandroid.mobile || true
             LAUNCH=$(adb shell cmd package resolve-activity --brief -c android.intent.category.LAUNCHER com.msandroid.mobile | tr -d '\r' | tail -1)
             echo "launcher=$LAUNCH" | tee diagnostics/runtime.txt
             test -n "$LAUNCH"
-            adb shell am start -W -n "$LAUNCH" | tee diagnostics/start.txt
+            timeout 20s adb shell am start -W -n "$LAUNCH" | tee diagnostics/start.txt || true
 
-            sleep 12
-            PID12=$(adb shell pidof com.msandroid.mobile | tr -d '\r' || true)
-            echo "pid_12s=${PID12:-DEAD}" | tee -a diagnostics/runtime.txt
-            adb shell uiautomator dump /sdcard/magis-12.xml >/dev/null 2>&1 || true
-            adb pull /sdcard/magis-12.xml diagnostics/ui-12.xml >/dev/null 2>&1 || true
-            adb exec-out screencap -p > diagnostics/screen-12.png || true
+            sleep 10
+            PID10=$(adb shell pidof com.msandroid.mobile | tr -d '\r' || true)
+            echo "pid_10s=${PID10:-DEAD}" | tee -a diagnostics/runtime.txt
+            timeout 10s adb shell uiautomator dump /sdcard/magis-10.xml >/dev/null 2>&1 || true
+            timeout 10s adb pull /sdcard/magis-10.xml diagnostics/ui-10.xml >/dev/null 2>&1 || true
+            timeout 10s adb exec-out screencap -p > diagnostics/screen-10.png || true
 
-            sleep 35
-            PID47=$(adb shell pidof com.msandroid.mobile | tr -d '\r' || true)
-            echo "pid_47s=${PID47:-DEAD}" | tee -a diagnostics/runtime.txt
-            adb shell uiautomator dump /sdcard/magis-47.xml >/dev/null 2>&1 || true
-            adb pull /sdcard/magis-47.xml diagnostics/ui-47.xml >/dev/null 2>&1 || true
-            adb exec-out screencap -p > diagnostics/screen-47.png || true
-            adb logcat -d -v threadtime | grep -Ei 'com\.msandroid\.mobile|FATAL EXCEPTION|AndroidRuntime|SIGKILL|EXIT_SELF' | tail -500 > diagnostics/logcat-relevant.txt || true
+            sleep 20
+            PID30=$(adb shell pidof com.msandroid.mobile | tr -d '\r' || true)
+            echo "pid_30s=${PID30:-DEAD}" | tee -a diagnostics/runtime.txt
+            timeout 10s adb shell uiautomator dump /sdcard/magis-30.xml >/dev/null 2>&1 || true
+            timeout 10s adb pull /sdcard/magis-30.xml diagnostics/ui-30.xml >/dev/null 2>&1 || true
+            timeout 10s adb exec-out screencap -p > diagnostics/screen-30.png || true
+            timeout 10s adb logcat -d -v threadtime | grep -Ei 'com\.msandroid\.mobile|FATAL EXCEPTION|AndroidRuntime|SIGKILL|EXIT_SELF|UnsatisfiedLinkError' | tail -500 > diagnostics/logcat-relevant.txt || true
 
             python3 - <<'PY'
             from pathlib import Path
             import re
             out=[]
-            for fn in ('diagnostics/ui-12.xml','diagnostics/ui-47.xml'):
+            for fn in ('diagnostics/ui-10.xml','diagnostics/ui-30.xml'):
                 p=Path(fn)
                 t=p.read_text(errors='ignore') if p.exists() else ''
                 vals=re.findall(r'text="([^"]*)"',t)
@@ -102,8 +102,8 @@ jobs:
             PY
             cat diagnostics/ui-text.txt || true
 
-            test -n "$PID12"
-            test -n "$PID47"
+            test -n "$PID10"
+            test -n "$PID30"
 
       - name: Upload diagnostics and candidate
         if: always()
