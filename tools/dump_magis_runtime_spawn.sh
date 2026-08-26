@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euxo pipefail
 
-mkdir -p diagnostics624/dexdump
+mkdir -p diagnostics624/dexdump diagnostics624/jadx-runtime
 
 adb root || true
 adb wait-for-device
@@ -20,22 +20,19 @@ adb shell 'pkill -9 frida-server || true; nohup /data/local/tmp/frida-server >/d
 sleep 3
 frida-ps -Uai | tee diagnostics624/frida-ps-spawn.txt
 
-# Spawn the package suspended so Frida attaches before app code runs.
 python - <<'PY' | tee diagnostics624/spawn-driver.txt
-import frida, time, os, sys, subprocess
+import frida, time
 pkg='com.msandroid.mobile'
 dev=frida.get_usb_device(timeout=15)
 pid=dev.spawn([pkg])
 print('spawned', pid, flush=True)
 session=dev.attach(pid)
-# Resume immediately after attach; frida-dexdump will attach to the now-live process.
 dev.resume(pid)
 print('resumed', pid, flush=True)
-time.sleep(2)
+time.sleep(4)
 open('diagnostics624/spawn-pid.txt','w').write(str(pid))
 PY
 
-# Capture as early as possible after spawn.
 set +e
 frida-dexdump -U -p "$(cat diagnostics624/spawn-pid.txt)" -o diagnostics624/dexdump \
   2>&1 | tee diagnostics624/frida-dexdump-spawn.txt
@@ -52,11 +49,43 @@ find diagnostics624/dexdump -type f -name '*.dex' -print -exec sha256sum '{}' ';
   | tee diagnostics624/dex-files-spawn.txt
 
 grep -RIna --binary-files=text -E \
-  'handleForceUpgrade|handleUpgradeBussiness|CommonUpgradeDialog|UpgradeDialog|forceUpdate|getForceUpdate|hasNewVersion|upgradeVerCode|dialog_common_upgrade|api/portalCore/box/update' \
-  diagnostics624/dexdump > diagnostics624/upgrade-symbol-hits-spawn.txt || true
-head -200 diagnostics624/upgrade-symbol-hits-spawn.txt || true
+  'vod_no_media|No media found|media sequence|getMedias|StartPlayVOD|PlayAty|0x7f11049b|handleForceUpgrade|forceUpdate|upgradeVerCode' \
+  diagnostics624/dexdump > diagnostics624/vod-symbol-hits-spawn.txt || true
+head -300 diagnostics624/vod-symbol-hits-spawn.txt || true
 
-# Fail only if no DEX was captured, so a green workflow means the dump is usable.
+# Decompile every captured runtime DEX together and trace the actual VOD failure branch.
+curl -fL --retry 3 --retry-all-errors https://github.com/skylot/jadx/releases/download/v1.5.6/jadx-1.5.6.zip -o /tmp/jadx.zip
+rm -rf /tmp/jadx-runtime-bin && unzip -q /tmp/jadx.zip -d /tmp/jadx-runtime-bin
+mapfile -t DEXES < <(find diagnostics624/dexdump -type f -name '*.dex' | sort)
+if [ ${#DEXES[@]} -gt 0 ]; then
+  /tmp/jadx-runtime-bin/bin/jadx --no-res --show-bad-code -d diagnostics624/jadx-runtime "${DEXES[@]}" > diagnostics624/jadx-runtime.log 2>&1 || true
+fi
+
+grep -RIna -E \
+  'vod_no_media|2131821723|0x7f11049b|getMedias\(|StartPlayVOD|PlayAty|No media found|media sequence' \
+  diagnostics624/jadx-runtime/sources > diagnostics624/vod-jadx-hits.txt || true
+
+python3 - <<'PY'
+import os,re
+hits='diagnostics624/vod-jadx-hits.txt'
+out='diagnostics624/vod-jadx-context.txt'
+seen=[]
+if os.path.exists(hits):
+ for line in open(hits,errors='ignore'):
+  m=re.match(r'([^:]+):(\d+):',line)
+  if m:
+   key=(m.group(1),int(m.group(2)))
+   if key not in seen: seen.append(key)
+with open(out,'w') as w:
+ for p,n in seen[:160]:
+  try: lines=open(p,errors='ignore').read().splitlines()
+  except: continue
+  w.write(f'\n===== {p}:{n} =====\n')
+  for i in range(max(1,n-35),min(len(lines),n+35)+1):
+   w.write(f'{i:05d}: {lines[i-1]}\n')
+PY
+head -1000 diagnostics624/vod-jadx-context.txt || true
+
 if ! find diagnostics624/dexdump -type f -name '*.dex' -print -quit | grep -q .; then
   echo 'NO_DEX_CAPTURED'
   exit 2
