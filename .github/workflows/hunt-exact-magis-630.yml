@@ -1,0 +1,89 @@
+name: Hunt exact Magis 6.3.0 mirror
+
+on:
+  push:
+    branches: [magis-630-exact-mirror-hunt]
+  workflow_dispatch:
+
+jobs:
+  hunt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Crawl promising Magis 6.3.0 pages
+        shell: bash
+        run: |
+          set -u
+          EXPECTED='d4edfc8ee9fbc008f9daa2cbb3aac733939987b7570bfc58a7065ebecfaa510a'
+          mkdir -p hunt/pages hunt/downloads
+          cat > hunt/pages.txt <<'EOF'
+          https://magistvhub.app/es/
+          https://magistvhub.app/
+          https://magistvhd.app/descargar-magis-tv-apk/
+          https://magistvhd.app/
+          EOF
+          : > hunt/links.txt
+          n=0
+          while read -r PAGE; do
+            n=$((n+1))
+            echo "=== PAGE $PAGE ===" | tee -a hunt/report.txt
+            curl -k -L -A 'Mozilla/5.0 (Android 16; Mobile)' --connect-timeout 15 --max-time 60 --retry 2 "$PAGE" -o "hunt/pages/page$n.html" 2>>hunt/curl-errors.txt || continue
+            wc -c "hunt/pages/page$n.html" | tee -a hunt/report.txt
+            python3 - "$PAGE" "hunt/pages/page$n.html" >> hunt/links.txt <<'PY'
+          import html,re,sys,urllib.parse
+          base,path=sys.argv[1:]
+          s=html.unescape(open(path,encoding='utf-8',errors='ignore').read()).replace('\\/','/')
+          vals=[]
+          vals += re.findall(r'''(?:href|src)=["']([^"']+)["']''',s,re.I)
+          vals += re.findall(r'''https?://[^\s"'<>]+''',s,re.I)
+          for x in vals:
+              x=x.strip()
+              if any(k in x.lower() for k in ('.apk','download','descarg','magis','android')):
+                  print(urllib.parse.urljoin(base,x))
+          PY
+          done < hunt/pages.txt
+
+          # Query common WordPress APIs as an independent source of media URLs.
+          for U in \
+            'https://magistvhub.app/wp-json/wp/v2/media?search=magis&per_page=100' \
+            'https://magistvhub.app/wp-json/wp/v2/media?search=apk&per_page=100' \
+            'https://magistvhd.app/wp-json/wp/v2/media?search=magis&per_page=100'; do
+            curl -k -L -A 'Mozilla/5.0' --connect-timeout 15 --max-time 60 "$U" 2>>hunt/curl-errors.txt | grep -Eo 'https?[^" ]+\.(apk|zip)(\?[^" ]*)?' >> hunt/links.txt || true
+          done
+
+          sort -u hunt/links.txt -o hunt/links.txt
+          echo "Candidate links: $(wc -l < hunt/links.txt)" | tee -a hunt/report.txt
+          cat hunt/links.txt >> hunt/report.txt
+
+          found=0
+          i=0
+          while read -r URL; do
+            i=$((i+1))
+            [ $i -le 80 ] || break
+            OUT="hunt/downloads/candidate-$i"
+            echo "TRY $URL" | tee -a hunt/report.txt
+            curl -k -fL -A 'Mozilla/5.0 (Android 16; Mobile)' --connect-timeout 12 --max-time 90 --retry 1 "$URL" -o "$OUT" 2>>hunt/curl-errors.txt || continue
+            SIZE=$(stat -c%s "$OUT" 2>/dev/null || echo 0)
+            echo "size=$SIZE" | tee -a hunt/report.txt
+            # Ignore HTML/small files. User APK is 35,766,216 bytes; keep a broad APK range.
+            if [ "$SIZE" -lt 25000000 ] || [ "$SIZE" -gt 50000000 ]; then rm -f "$OUT"; continue; fi
+            SHA=$(sha256sum "$OUT" | awk '{print $1}')
+            echo "sha256=$SHA" | tee -a hunt/report.txt
+            if [ "$SHA" = "$EXPECTED" ]; then
+              mv "$OUT" hunt/EXACT-magistv_celular_v6.3.0.apk
+              echo "EXACT MATCH: $URL" | tee hunt/EXACT-FOUND.txt
+              found=1
+              break
+            fi
+          done < hunt/links.txt
+
+          echo "found=$found" | tee -a hunt/report.txt
+          exit 0
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: magis-630-mirror-hunt
+          path: hunt/
+          retention-days: 2
