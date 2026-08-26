@@ -1,0 +1,107 @@
+name: Test Magis signature-only control
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  signature-control:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install build tools and download same-signer Magis bootstrap
+        shell: bash
+        run: |
+          set -euxo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'build-tools;36.0.0'
+          curl -fL --retry 4 --retry-all-errors -A 'Mozilla/5.0' 'https://tinyurl.com/Magis-TV-File' -o magis-original.apk
+          unzip -t magis-original.apk >/dev/null
+          sha256sum magis-original.apk
+          APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          "$APKSIGNER" verify --verbose --print-certs magis-original.apk | tee original-signing.txt
+      - name: Create test key
+        shell: bash
+        run: |
+          set -euxo pipefail
+          keytool -genkeypair -noprompt -keystore test.jks -storepass android -keypass android -alias test -keyalg RSA -keysize 2048 -validity 3650 -dname 'CN=Signature Control,O=Local Test,C=MX'
+      - name: Repack without changing payload and re-sign
+        shell: bash
+        run: |
+          set -euxo pipefail
+          rm -rf repack && mkdir repack
+          cd repack
+          unzip -q ../magis-original.apk
+          rm -f META-INF/*.RSA META-INF/*.DSA META-INF/*.EC META-INF/*.SF META-INF/MANIFEST.MF
+          zip -qr ../magis-repacked-unsigned.apk .
+          cd ..
+          ZIPALIGN="$ANDROID_HOME/build-tools/36.0.0/zipalign"
+          APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          "$ZIPALIGN" -f 4 magis-repacked-unsigned.apk magis-resigned.apk
+          "$APKSIGNER" sign --ks test.jks --ks-pass pass:android --key-pass pass:android --ks-key-alias test magis-resigned.apk
+          "$APKSIGNER" verify --verbose --print-certs magis-resigned.apk | tee resigned-signing.txt
+          python3 - <<'PY'
+          import zipfile, hashlib
+          a='magis-original.apk'; b='magis-resigned.apk'
+          for n in ['AndroidManifest.xml','classes.dex','resources.arsc']:
+              with zipfile.ZipFile(a) as za, zipfile.ZipFile(b) as zb:
+                  xa=za.read(n); xb=zb.read(n)
+              print(n, len(xa), len(xb), hashlib.sha256(xa).hexdigest(), hashlib.sha256(xb).hexdigest(), 'IDENTICAL='+str(xa==xb))
+              assert xa==xb
+          PY
+      - name: Enable KVM
+        shell: bash
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Compare original and signature-only variant on Android 16
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          script: |
+            set -euxo pipefail
+            mkdir -p diagnostics-signature
+            adb install -r -g magis-original.apk
+            adb logcat -c
+            adb shell am force-stop com.msandroid.mobile
+            adb shell monkey -p com.msandroid.mobile -c android.intent.category.LAUNCHER 1 || true
+            sleep 20
+            ORIG_PID=$(adb shell pidof com.msandroid.mobile | tr -d '\r' || true)
+            echo "ORIGINAL_PID=$ORIG_PID" | tee diagnostics-signature/original.txt
+            adb logcat -d > diagnostics-signature/original-logcat.txt || true
+            adb uninstall com.msandroid.mobile || true
+            adb install -r -g magis-resigned.apk
+            adb logcat -c
+            adb shell am force-stop com.msandroid.mobile
+            adb shell monkey -p com.msandroid.mobile -c android.intent.category.LAUNCHER 1 || true
+            sleep 20
+            RESIGNED_PID=$(adb shell pidof com.msandroid.mobile | tr -d '\r' || true)
+            echo "RESIGNED_PID=$RESIGNED_PID" | tee diagnostics-signature/resigned.txt
+            adb logcat -d > diagnostics-signature/resigned-logcat.txt || true
+            grep -Ei 'EXIT_SELF|signature|certificate|tamper|verify|protect|shell' diagnostics-signature/resigned-logcat.txt | tail -200 > diagnostics-signature/resigned-interesting.txt || true
+            echo "ORIGINAL=$ORIG_PID RESIGNED=$RESIGNED_PID"
+            test -n "$ORIG_PID"
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: magis-signature-control
+          retention-days: 7
+          if-no-files-found: warn
+          path: diagnostics-signature/**
