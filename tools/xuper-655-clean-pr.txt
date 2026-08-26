@@ -1,0 +1,2 @@
+Clean validation branch for Xuper 6.5.5 on Pixel 6 / Android 16.
+Required: versionCode 60505, official signer preserved, alive at 60 seconds, no forced-update dialog.
