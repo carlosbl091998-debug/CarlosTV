@@ -20,22 +20,42 @@ adb shell chmod 755 /data/local/tmp/frida-server
 adb shell 'pkill -9 frida-server || true; nohup /data/local/tmp/frida-server >/data/local/tmp/frida.log 2>&1 &' || true
 sleep 3
 frida-ps -Uai | tee diagnostics624/frida-ps-before.txt || true
+adb logcat -c || true
 
-# Spawn through Frida immediately. Cap the dump so CI always returns diagnostics.
-set +e
-timeout --signal=INT --kill-after=10s 45s \
-  frida-dexdump -U -f com.msandroid.mobile -o diagnostics624/dexdump \
-  2>&1 | tee diagnostics624/frida-dexdump.txt
-rc=${PIPESTATUS[0]}
-set -e
-echo "frida-dexdump rc=$rc" | tee diagnostics624/frida-dexdump-rc.txt
+# Launch normally so the app is not held in Frida spawn. Attach as soon as PID exists.
+adb shell am start -n com.msandroid.mobile/com.mobile.brasiltv.activity.SplashAty \
+  | tee diagnostics624/am-start.txt || true
+PID=""
+for i in $(seq 1 100); do
+  PID=$(adb shell pidof com.msandroid.mobile 2>/dev/null | tr -d '\r' || true)
+  if [ -n "$PID" ]; then
+    echo "pid_seen=$PID iteration=$i" | tee diagnostics624/pid-first-seen.txt
+    break
+  fi
+  sleep 0.1
+done
 
-# Capture runtime state after the spawn/dump attempt without hiding failures.
+if [ -z "$PID" ]; then
+  echo "PID never appeared" | tee diagnostics624/attach-result.txt
+else
+  set +e
+  timeout --signal=INT --kill-after=5s 30s \
+    frida-dexdump -U -p "$PID" -o diagnostics624/dexdump \
+    2>&1 | tee diagnostics624/frida-dexdump.txt
+  rc=${PIPESTATUS[0]}
+  set -e
+  echo "frida-dexdump rc=$rc pid=$PID" | tee diagnostics624/frida-dexdump-rc.txt
+fi
+
 adb shell pidof com.msandroid.mobile | tee diagnostics624/pid-after-dump.txt || true
 adb shell dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity' | tee diagnostics624/resumed-after-dump.txt || true
 adb shell uiautomator dump /sdcard/window.xml >/dev/null 2>&1 || true
 adb pull /sdcard/window.xml diagnostics624/window-after-dump.xml >/dev/null 2>&1 || true
 adb exec-out screencap -p > diagnostics624/screen-after-dump.png || true
+adb logcat -d -v threadtime > diagnostics624/logcat.txt || true
+{
+  grep -E 'FATAL EXCEPTION|AndroidRuntime|UnsatisfiedLinkError|SIGABRT|SIGSEGV|com.msandroid.mobile|SplashAty|Upgrade|upgrade' diagnostics624/logcat.txt || true
+} > diagnostics624/logcat-focus.txt
 adb shell cat /data/local/tmp/frida.log > diagnostics624/frida-server.log 2>/dev/null || true
 
 find diagnostics624/dexdump -type f -name '*.dex' -print -exec sha256sum {} \; | tee diagnostics624/dex-files.txt || true
@@ -43,5 +63,4 @@ grep -RIna --binary-files=text -E 'handleForceUpgrade|handleUpgradeBussiness|Com
   > diagnostics624/upgrade-symbol-hits.txt || true
 head -300 diagnostics624/upgrade-symbol-hits.txt || true
 
-# Success means at least one runtime DEX was actually recovered.
 test -n "$(find diagnostics624/dexdump -type f -name '*.dex' -print -quit)"
