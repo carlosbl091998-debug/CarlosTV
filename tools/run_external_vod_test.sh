@@ -21,7 +21,8 @@ if [ -z "$PID5" ]; then
   echo APP_DIED_BEFORE_ATTACH > "$OUT/result.txt"
   exit 21
 fi
-(timeout 55s frida -U -n "$PKG" -l tools/vod_v9_external_hook.js -q > "$OUT/frida.txt" 2>&1 || true) &
+# Attach directly to the already-running PID. Do not use spawn/name resolution.
+(timeout 55s frida -U -p "$PID5" -l tools/vod_v9_external_hook.js -q > "$OUT/frida.txt" 2>&1 || true) &
 FRIDA_PID=$!
 sleep 15
 PID20=$(adb shell pidof "$PKG" 2>/dev/null | tr -d '\r' || true)
