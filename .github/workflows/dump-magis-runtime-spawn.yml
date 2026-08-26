@@ -46,7 +46,7 @@ jobs:
           disable-animations: true
           emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
           script: |
-            set -euxo pipefail
+            set -eux
             APK='diagnostics-vod-v9-gadget/Xuper-VOD-v9-Gadget-Candidate.apk'
             PKG='com.msandroid.mobile'
             adb install -r -g "$APK" | tee diagnostics-vod-v9-gadget/install.txt
