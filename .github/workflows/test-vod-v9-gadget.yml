@@ -66,7 +66,6 @@ jobs:
               grep -Ein 'FATAL EXCEPTION|UnsatisfiedLinkError|SIGABRT|Fatal signal' diagnostics-vod-v9-gadget/logcat.txt | tail -50
               exit 70
             fi
-            # The protected app loads cb.z1 after its loader initializes. Record whether Gadget announced the hook.
             grep -Ei 'XUPER_VOD_FIX|frida|gadget' diagnostics-vod-v9-gadget/logcat.txt | tail -200 > diagnostics-vod-v9-gadget/gadget-log.txt || true
             echo 'ANDROID16_STABILITY_OK' | tee -a diagnostics-vod-v9-gadget/runtime-result.txt
 
