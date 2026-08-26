@@ -64,7 +64,7 @@ jobs:
           disable-animations: true
           force-avd-creation: false
           emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
-          script: bash tools/test_magis_baseline_no_frida.sh
+          script: timeout --signal=TERM --kill-after=10s 55s bash tools/test_magis_baseline_no_frida.sh
 
       - name: Upload baseline diagnostics
         if: always()
