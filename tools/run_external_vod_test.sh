@@ -4,18 +4,67 @@ OUT=diagnostics-vod-v9-external
 APK=stable-base/Xuper-base-stable.apk
 PKG=com.msandroid.mobile
 mkdir -p "$OUT"
-adb wait-for-device
+
+wait_adb_stable() {
+  echo "Waiting for stable ADB..."
+  adb wait-for-device
+  local ok=0
+  for i in $(seq 1 30); do
+    state="$(adb get-state 2>/dev/null || true)"
+    boot="$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
+    if [ "$state" = "device" ] && [ "$boot" = "1" ]; then
+      ok=$((ok+1))
+      if [ "$ok" -ge 5 ]; then
+        adb shell true
+        return 0
+      fi
+    else
+      ok=0
+    fi
+    sleep 2
+  done
+  echo "ADB never became stable" >&2
+  adb devices -l || true
+  return 1
+}
+
+wait_adb_stable
 adb root >/dev/null 2>&1 || true
-adb wait-for-device
+wait_adb_stable
+
+# Install first. Retry transient package-service/transport failures only after
+# ADB has returned to a stable device state.
+installed=0
+for attempt in 1 2 3; do
+  echo "APK install attempt $attempt"
+  if adb install -r -g "$APK" 2>&1 | tee "$OUT/install-attempt-${attempt}.txt"; then
+    installed=1
+    cp "$OUT/install-attempt-${attempt}.txt" "$OUT/install.txt"
+    break
+  fi
+  adb kill-server || true
+  sleep 3
+  adb start-server
+  wait_adb_stable
+  sleep 2
+done
+if [ "$installed" -ne 1 ]; then
+  echo INSTALL_FAILED > "$OUT/result.txt"
+  exit 20
+fi
+
+# Frida is deliberately started only after package installation is complete.
 adb push /tmp/frida-server /data/local/tmp/frida-server >/dev/null
 adb shell chmod 755 /data/local/tmp/frida-server
 adb shell 'pkill -f frida-server || true' || true
 adb shell 'nohup /data/local/tmp/frida-server -l 0.0.0.0:27042 >/data/local/tmp/frida.log 2>&1 </dev/null &' || true
 sleep 3
+wait_adb_stable
 adb shell 'ps -A | grep frida || true' > "$OUT/frida-server-ps.txt"
 adb shell 'cat /data/local/tmp/frida.log || true' > "$OUT/frida-server-log.txt"
+adb forward --remove-all || true
 adb forward tcp:27042 tcp:27042
-adb install -r -g "$APK" | tee "$OUT/install.txt"
+
 adb logcat -c
 adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 > "$OUT/launch.txt" 2>&1 || true
 sleep 5
