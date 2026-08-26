@@ -1,3 +1,4 @@
 Xuper 6.5.5 validation trigger
 Target versionCode: 60505
 Reject forced-update UI after 60 seconds.
+Validation workflow installed on main at 3d53b6bbc994a2b2eeaa9c191d627f27baeda325.
