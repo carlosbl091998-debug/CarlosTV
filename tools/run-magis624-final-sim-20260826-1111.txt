@@ -1,0 +1,1 @@
+Trigger exact Magis 6.2.4 static patch test and runtime DEX dump on Pixel 6 Android 16.
