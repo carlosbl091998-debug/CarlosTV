@@ -1,0 +1,40 @@
+name: Export APK rebuild tools
+
+on:
+  push:
+    branches: [magis-630-resource-patch-test]
+  workflow_dispatch:
+
+jobs:
+  tools:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download Apktool 3.0.3
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 --connect-timeout 20 --max-time 180 \
+            https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar \
+            -o apktool_3.0.3.jar
+          echo 'dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423  apktool_3.0.3.jar' | sha256sum -c -
+
+      - name: Collect Android build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          BT="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
+          echo "Using $BT"
+          mkdir bundle
+          cp apktool_3.0.3.jar bundle/
+          cp "$BT/zipalign" bundle/
+          cp "$BT/lib/apksigner.jar" bundle/
+          cp "$BT/aapt2" bundle/ || true
+          chmod +x bundle/zipalign bundle/aapt2 2>/dev/null || true
+          ls -lh bundle
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: magis-apk-rebuild-tools-linux
+          path: bundle/
+          retention-days: 2
