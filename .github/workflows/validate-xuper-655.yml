@@ -3,6 +3,8 @@ name: Validate Xuper 6.5.5 on Android 16
 on:
   pull_request:
     branches: [ main ]
+  issue_comment:
+    types: [created]
   workflow_dispatch:
 
 permissions:
@@ -10,10 +12,13 @@ permissions:
 
 jobs:
   validate-xuper-655:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || (github.event.issue.pull_request && github.event.comment.body == '/validate-xuper-655') }}
     runs-on: ubuntu-latest
     timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -41,7 +46,7 @@ jobs:
           sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm
 
-      - name: Official update chain and no-update-gate test
+      - name: Official 6.5.5 download and no-update-gate test
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 36
@@ -63,8 +68,8 @@ jobs:
           AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)
           "$AAPT" dump badging "$APK" | tee diagnostics-update/final-badging.txt
           grep -q "package: name='com.msandroid.mobile' versionCode='60505' versionName='6.5.5'" diagnostics-update/final-badging.txt
-          cp "$APK" Xuper-6.5.5-OFICIAL-ANDROID16-PROBADA.apk
-          sha256sum Xuper-6.5.5-OFICIAL-ANDROID16-PROBADA.apk | tee Xuper-6.5.5-OFICIAL-ANDROID16-PROBADA.sha256
+          cp "$APK" Xuper-6.5.5-OFICIAL-ANDROID16-SIN-ACTUALIZACION.apk
+          sha256sum Xuper-6.5.5-OFICIAL-ANDROID16-SIN-ACTUALIZACION.apk | tee Xuper-6.5.5-OFICIAL-ANDROID16-SIN-ACTUALIZACION.sha256
 
       - name: Upload tested APK and diagnostics
         if: always()
@@ -74,8 +79,8 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
           path: |
-            Xuper-6.5.5-OFICIAL-ANDROID16-PROBADA.apk
-            Xuper-6.5.5-OFICIAL-ANDROID16-PROBADA.sha256
+            Xuper-6.5.5-OFICIAL-ANDROID16-SIN-ACTUALIZACION.apk
+            Xuper-6.5.5-OFICIAL-ANDROID16-SIN-ACTUALIZACION.sha256
             bootstrap-badging.txt
             bootstrap-signing.txt
             bootstrap-sha256.txt
