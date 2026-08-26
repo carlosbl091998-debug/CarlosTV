@@ -1,0 +1,3 @@
+Xuper 6.5.5 validation trigger
+Target versionCode: 60505
+Reject forced-update UI after 60 seconds.
