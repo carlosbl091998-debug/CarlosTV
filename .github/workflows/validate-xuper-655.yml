@@ -1,4 +1,4 @@
-name: Test Magis 6.2.4 no-update gate on Android 16
+name: Test Magis 6.2.4 endpoint standalone on Android 16
 
 on:
   push:
@@ -12,20 +12,17 @@ permissions:
 jobs:
   test-magis-624:
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
-
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-
       - uses: android-actions/setup-android@v3
-
-      - name: Recover exact tested official Magis 6.2.4 from historical artifact
+      - name: Recover exact official Magis 6.2.4
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -41,17 +38,8 @@ jobs:
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
             -o /tmp/magis624.zip
           unzip -q /tmp/magis624.zip -d /tmp/magis624
-          test -s /tmp/magis624/Xuper-Mobile-Official-Successor-Tested.apk
           cp /tmp/magis624/Xuper-Mobile-Official-Successor-Tested.apk Magis-6.2.4.apk
           echo "${EXPECTED_SHA}  Magis-6.2.4.apk" | sha256sum -c -
-          unzip -t Magis-6.2.4.apk >/dev/null
-          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)
-          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
-          "$AAPT" dump badging Magis-6.2.4.apk | tee recovered-badging.txt
-          grep -q "package: name='com.msandroid.mobile' versionCode='60204' versionName='6.2.4'" recovered-badging.txt
-          "$APKSIGNER" verify --verbose --print-certs Magis-6.2.4.apk | tee recovered-signing.txt
-          grep -qi 'd30dc60fd8625d49fa4e82eb442c9307743f9621004b94e229dcc01f6a9035ff' recovered-signing.txt
-
       - name: Enable KVM
         shell: bash
         run: |
@@ -59,8 +47,7 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm
-
-      - name: Deep Magis 6.2.4 runtime analysis on Pixel 6 Android 16
+      - name: Test endpoint patch as normal installed APK
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 36
@@ -70,29 +57,16 @@ jobs:
           disable-animations: true
           force-avd-creation: false
           emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
-          script: bash tools/test_magis_624_deep.sh
-
-      - name: Summarize deep result
+          script: bash tools/test_magis_624_endpoint_standalone.sh
+      - name: Show result
         if: always()
         shell: bash
-        run: |
-          echo '=== STATIC RUNTIME RESULTS ==='
-          cat diagnostics-deep/static-results.txt 2>/dev/null || true
-          echo '=== FRIDA UPDATE CLASSES ==='
-          cat diagnostics-deep/frida/update-classes.txt 2>/dev/null || true
-          echo '=== DEX DUMP HITS ==='
-          cat diagnostics-deep/dexdump-hits.txt 2>/dev/null || true
-          echo '=== FILES ==='
-          find diagnostics-deep -maxdepth 3 -type f | sort || true
-
-      - name: Upload Magis 6.2.4 deep diagnostics
+        run: cat diagnostics-endpoint-standalone/result.txt 2>/dev/null || true
+      - name: Upload endpoint standalone result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: magis-624-deep-android16
+          name: magis-624-endpoint-standalone-android16
           retention-days: 7
           if-no-files-found: warn
-          path: |
-            recovered-badging.txt
-            recovered-signing.txt
-            diagnostics-deep/**
+          path: diagnostics-endpoint-standalone/**
