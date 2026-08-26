@@ -1,0 +1,2 @@
+Run verified Xuper 6.5.5 update test.
+Required: package com.msandroid.mobile, versionCode 60505, official signer, no forced-update gate.
