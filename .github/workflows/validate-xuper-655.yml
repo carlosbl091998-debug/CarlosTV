@@ -1,7 +1,7 @@
 name: Validate Xuper 6.5.5 on Android 16
 
 on:
-  pull_request:
+  push:
     branches: [ main ]
   workflow_dispatch:
 
@@ -51,7 +51,7 @@ jobs:
           disable-animations: true
           force-avd-creation: false
           emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
-          script: bash tools/test_magis_update_chain.sh
+          script: bash tools/test_xuper_655_main.sh
 
       - name: Verify final 6.5.5 metadata
         if: success()
