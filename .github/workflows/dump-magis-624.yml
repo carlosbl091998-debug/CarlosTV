@@ -2,7 +2,7 @@ name: Dump Magis 6.2.4 runtime DEX
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, magis-runtime-spawn-dump-v4 ]
   workflow_dispatch:
 
 permissions:
@@ -66,7 +66,7 @@ jobs:
           sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm
 
-      - name: Run 6.2.4 and dump decrypted DEX
+      - name: Spawn 6.2.4 with Frida and dump decrypted DEX
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 36
@@ -82,7 +82,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: magis-624-runtime-dexdump
+          name: magis-624-runtime-dexdump-spawn
           retention-days: 7
           if-no-files-found: warn
           path: |
