@@ -1,0 +1,50 @@
+name: Magis 6.3.0 exact source check
+
+on:
+  push:
+    branches: [magis-630-resource-patch-test]
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download candidate Magis 6.3.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL='https://d.imagstvapk.com/imagstvapk.com_magis-celular_vlatest.apk'
+          curl -fL --connect-timeout 20 --max-time 180 --retry 3 --retry-delay 3 "$URL" -o magis630.apk
+          ls -lh magis630.apk
+          sha256sum magis630.apk | tee sha256.txt
+
+      - name: Require exact user APK SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED='d4edfc8ee9fbc008f9daa2cbb3aac733939987b7570bfc58a7065ebecfaa510a'
+          ACTUAL="$(sha256sum magis630.apk | awk '{print $1}')"
+          echo "Expected: $EXPECTED"
+          echo "Actual:   $ACTUAL"
+          test "$ACTUAL" = "$EXPECTED"
+
+      - name: Inspect exact APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)"
+          "$AAPT" dump badging magis630.apk | head -20 | tee badging.txt
+          unzip -t magis630.apk >/dev/null
+
+      - name: Upload verified exact APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: magis-630-exact-original
+          path: |
+            magis630.apk
+            sha256.txt
+            badging.txt
+          retention-days: 2
