@@ -46,28 +46,21 @@ jobs:
           disable-animations: true
           emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
           script: |
-            set -eux
-            APK='diagnostics-vod-v9-gadget/Xuper-VOD-v9-Gadget-Candidate.apk'
-            PKG='com.msandroid.mobile'
-            adb install -r -g "$APK" | tee diagnostics-vod-v9-gadget/install.txt
+            adb install -r -g diagnostics-vod-v9-gadget/Xuper-VOD-v9-Gadget-Candidate.apk | tee diagnostics-vod-v9-gadget/install.txt
             adb logcat -c
-            adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 > diagnostics-vod-v9-gadget/launch.txt 2>&1 || true
+            adb shell monkey -p com.msandroid.mobile -c android.intent.category.LAUNCHER 1 > diagnostics-vod-v9-gadget/launch.txt 2>&1 || true
             sleep 20
-            PID20=$(adb shell pidof "$PKG" 2>/dev/null | tr -d '\r' || true)
+            adb shell pidof com.msandroid.mobile | tr -d '\r' | tee diagnostics-vod-v9-gadget/pid20.txt
             adb exec-out screencap -p > diagnostics-vod-v9-gadget/screen-20.png || true
             sleep 40
-            PID60=$(adb shell pidof "$PKG" 2>/dev/null | tr -d '\r' || true)
+            adb shell pidof com.msandroid.mobile | tr -d '\r' | tee diagnostics-vod-v9-gadget/pid60.txt
             adb exec-out screencap -p > diagnostics-vod-v9-gadget/screen-60.png || true
             adb logcat -d -v threadtime > diagnostics-vod-v9-gadget/logcat.txt || true
-            echo "pid20=$PID20 pid60=$PID60" | tee diagnostics-vod-v9-gadget/runtime-result.txt
-            test -n "$PID20"
-            test -n "$PID60"
-            if grep -Eqi 'FATAL EXCEPTION|UnsatisfiedLinkError|SIGABRT|Fatal signal' diagnostics-vod-v9-gadget/logcat.txt; then
-              grep -Ein 'FATAL EXCEPTION|UnsatisfiedLinkError|SIGABRT|Fatal signal' diagnostics-vod-v9-gadget/logcat.txt | tail -50
-              exit 70
-            fi
+            test -s diagnostics-vod-v9-gadget/pid20.txt
+            test -s diagnostics-vod-v9-gadget/pid60.txt
+            if grep -Eqi 'FATAL EXCEPTION|UnsatisfiedLinkError|SIGABRT|Fatal signal' diagnostics-vod-v9-gadget/logcat.txt; then grep -Ein 'FATAL EXCEPTION|UnsatisfiedLinkError|SIGABRT|Fatal signal' diagnostics-vod-v9-gadget/logcat.txt | tail -50; exit 70; fi
             grep -Ei 'XUPER_VOD_FIX|frida|gadget' diagnostics-vod-v9-gadget/logcat.txt | tail -200 > diagnostics-vod-v9-gadget/gadget-log.txt || true
-            echo 'ANDROID16_STABILITY_OK' | tee -a diagnostics-vod-v9-gadget/runtime-result.txt
+            echo 'ANDROID16_STABILITY_OK' | tee diagnostics-vod-v9-gadget/runtime-result.txt
 
       - name: Upload tested candidate and diagnostics
         if: always()
