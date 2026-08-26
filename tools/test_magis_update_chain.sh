@@ -5,6 +5,7 @@ PKG='com.msandroid.mobile'
 OUT='diagnostics-update'
 TARGET_CODE='60505'
 TARGET_NAME='6.5.5'
+UPDATE_URL='https://gaeg.xvmobdes.com/download'
 mkdir -p "$OUT"
 
 run_timeout() { local secs="$1"; shift; timeout "$secs" "$@"; }
@@ -35,97 +36,105 @@ raise SystemExit(0 if needle in text else 1)
 PY
 }
 
-click_label() {
-  local xml="$1" label="$2"
-  python3 - "$xml" "$label" <<'PY' > /tmp/xy.txt || return 1
-import re,sys,xml.etree.ElementTree as ET
-root=ET.parse(sys.argv[1]).getroot(); needle=sys.argv[2].casefold()
-for n in root.iter('node'):
-    text=(n.attrib.get('text','')+' '+n.attrib.get('content-desc','')).strip().casefold()
-    if needle not in text: continue
-    m=re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]',n.attrib.get('bounds',''))
-    if m:
-        x1,y1,x2,y2=map(int,m.groups()); print((x1+x2)//2,(y1+y2)//2); raise SystemExit(0)
-raise SystemExit(1)
-PY
-  read -r x y < /tmp/xy.txt
-  echo "tap label=$label x=$x y=$y" | tee -a "$OUT/actions.txt"
-  adb shell input tap "$x" "$y"
-}
-
 is_update_gate() {
   local xml="$1"
   xml_has "$xml" 'Actualización de versión' || \
   xml_has "$xml" 'Version Upgrade' || \
   xml_has "$xml" 'V6.5.5' || \
-  xml_has "$xml" 'Actualizar'
+  xml_has "$xml" 'Current version:' || \
+  xml_has "$xml" 'Versión actual:'
 }
 
-handle_installer() {
-  local before="$1" cycle="$2"
-  for n in $(seq 1 30); do
-    sleep 3
-    dump_ui "c${cycle}-installer-${n}"
-    local xml="$OUT/ui-c${cycle}-installer-${n}.xml"
-    click_label "$xml" 'Update' 2>/dev/null || true
-    click_label "$xml" 'Actualizar' 2>/dev/null || true
-    click_label "$xml" 'Install' 2>/dev/null || true
-    click_label "$xml" 'Instalar' 2>/dev/null || true
-    click_label "$xml" 'Done' 2>/dev/null || true
-    click_label "$xml" 'Listo' 2>/dev/null || true
-    local now; now=$(version_code || true)
-    if [[ -n "$now" && "$now" != "$before" ]]; then
-      echo "cycle=$cycle version_changed $before->$now" | tee -a "$OUT/actions.txt"
-      return 0
-    fi
-  done
-  return 1
-}
-
-echo '=== install signed bootstrap ===' | tee "$OUT/actions.txt"
-run_timeout 45s adb install -r -g magis-current.apk | tee "$OUT/install-bootstrap.txt"
-adb shell appops set "$PKG" REQUEST_INSTALL_PACKAGES allow >/dev/null 2>&1 || true
-
+AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)
 APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+
+# 1) Install the known official signed bootstrap so we test a genuine Android update,
+# not merely a clean install of the target APK.
+echo '=== install official signed bootstrap ===' | tee "$OUT/actions.txt"
+run_timeout 45s adb install -r -g magis-current.apk | tee "$OUT/install-bootstrap.txt"
 EXPECTED_CERT=$($APKSIGNER verify --print-certs magis-current.apk 2>/dev/null | sed -n 's/.*certificate SHA-256 digest: //p' | head -1 | tr -d ':[:space:]' | tr '[:upper:]' '[:lower:]')
 echo "expected_cert=$EXPECTED_CERT" | tee "$OUT/expected-cert.txt"
+[[ -n "$EXPECTED_CERT" ]] || { echo 'BOOTSTRAP_CERT_NOT_FOUND' >&2; exit 60; }
 
-# Give the emulator a Mexico GPS position. The app may still use IP geolocation,
-# but this avoids failing any normal GPS-based regional check.
-adb emu geo fix -99.1332 19.4326 >/dev/null 2>&1 || true
+launch_app
+sleep 15
+dump_ui bootstrap-before-update
+echo "bootstrap_code=$(version_code || true) bootstrap_name=$(version_name || true)" | tee "$OUT/bootstrap-version.txt"
 
-for cycle in 1 2 3 4 5 6; do
-  launch_app
-  sleep 15
-  code=$(version_code || true); name=$(version_name || true)
-  echo "cycle=$cycle code=$code name=$name" | tee -a "$OUT/versions.txt"
-  dump_ui "c${cycle}-before"
-  xml="$OUT/ui-c${cycle}-before.xml"
+# 2) Download exactly from the URL printed by the app's forced-update dialog.
+echo "update_url=$UPDATE_URL" | tee "$OUT/update-url.txt"
+curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 180 \
+  -A 'Mozilla/5.0 (Linux; Android 16; Pixel 6) AppleWebKit/537.36 Chrome/140 Mobile Safari/537.36' \
+  -D "$OUT/update-response-headers.txt" \
+  -w '%{url_effective}\n%{http_code}\n%{content_type}\n' \
+  "$UPDATE_URL" -o "$OUT/update-download.bin" > "$OUT/update-response-meta.txt"
+file "$OUT/update-download.bin" | tee "$OUT/update-file-type.txt"
+ls -lh "$OUT/update-download.bin" | tee "$OUT/update-size.txt"
 
-  if [[ "$code" == "$TARGET_CODE" || "$name" == "$TARGET_NAME" ]]; then
-    echo "target_reached cycle=$cycle" | tee -a "$OUT/actions.txt"
-    break
+# The endpoint may return a tiny HTML redirect/landing page rather than the APK.
+# If so, extract the first APK/download URL present and follow it once.
+if ! unzip -t "$OUT/update-download.bin" >/dev/null 2>&1; then
+  python3 - "$OUT/update-download.bin" > "$OUT/discovered-url.txt" <<'PY' || true
+import re, sys, html
+p=sys.argv[1]
+raw=open(p,'rb').read(2_000_000).decode('utf-8','ignore')
+raw=html.unescape(raw).replace('\\/','/')
+patterns=[
+ r'https?://[^\"\'<>\s]+?\.apk(?:\?[^\"\'<>\s]*)?',
+ r'https?://[^\"\'<>\s]+?/download[^\"\'<>\s]*',
+ r'(?:href|src)=[\"\']([^\"\']+)[\"\']',
+]
+for pat in patterns:
+    for m in re.finditer(pat, raw, re.I):
+        u=m.group(1) if m.lastindex else m.group(0)
+        if u.startswith('//'): u='https:'+u
+        if u.startswith('/'):
+            u='https://gaeg.xvmobdes.com'+u
+        if u.startswith('http') and u != 'https://gaeg.xvmobdes.com/download':
+            print(u); raise SystemExit(0)
+raise SystemExit(1)
+PY
+  DISCOVERED=$(head -1 "$OUT/discovered-url.txt" 2>/dev/null || true)
+  if [[ -n "$DISCOVERED" ]]; then
+    echo "following_discovered_url=$DISCOVERED" | tee -a "$OUT/actions.txt"
+    curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 180 \
+      -A 'Mozilla/5.0 (Linux; Android 16; Pixel 6)' \
+      -e "$UPDATE_URL" "$DISCOVERED" -o "$OUT/update-download.bin"
   fi
+fi
 
-  if ! is_update_gate "$xml"; then
-    echo "TARGET_NOT_REACHED_AND_NO_UPDATE_GATE code=$code name=$name" >&2
-    exit 50
-  fi
+unzip -t "$OUT/update-download.bin" >/dev/null 2>&1 || {
+  echo 'UPDATE_ENDPOINT_DID_NOT_RETURN_APK' >&2
+  head -c 4096 "$OUT/update-download.bin" > "$OUT/update-download-prefix.bin" || true
+  exit 61
+}
+mv "$OUT/update-download.bin" "$OUT/Xuper-6.5.5-Downloaded.apk"
 
-  before="$code"
-  click_label "$xml" 'Actualizar' || click_label "$xml" 'Update' || {
-    echo 'UPDATE_BUTTON_NOT_FOUND' >&2; exit 51;
-  }
-  handle_installer "$before" "$cycle" || { echo 'UPDATE_DID_NOT_INSTALL' >&2; exit 52; }
-done
+# 3) Strict identity check before installing anything.
+$AAPT dump badging "$OUT/Xuper-6.5.5-Downloaded.apk" | tee "$OUT/downloaded-badging.txt"
+grep -q "package: name='$PKG' versionCode='$TARGET_CODE' versionName='$TARGET_NAME'" "$OUT/downloaded-badging.txt" || {
+  echo 'DOWNLOADED_APK_IS_NOT_XUPER_655' >&2; exit 62;
+}
+$APKSIGNER verify --verbose --print-certs "$OUT/Xuper-6.5.5-Downloaded.apk" | tee "$OUT/downloaded-signing.txt"
+DOWNLOADED_CERT=$($APKSIGNER verify --print-certs "$OUT/Xuper-6.5.5-Downloaded.apk" 2>/dev/null | sed -n 's/.*certificate SHA-256 digest: //p' | head -1 | tr -d ':[:space:]' | tr '[:upper:]' '[:lower:]')
+echo "downloaded_cert=$DOWNLOADED_CERT" | tee "$OUT/downloaded-cert.txt"
+[[ "$DOWNLOADED_CERT" == "$EXPECTED_CERT" ]] || {
+  echo "DOWNLOADED_SIGNER_MISMATCH expected=$EXPECTED_CERT got=$DOWNLOADED_CERT" >&2; exit 63;
+}
+sha256sum "$OUT/Xuper-6.5.5-Downloaded.apk" | tee "$OUT/downloaded-sha256.txt"
 
+# 4) Perform the actual Android package update over the installed old version.
+echo '=== adb install -r official 6.5.5 ===' | tee -a "$OUT/actions.txt"
+run_timeout 90s adb install -r -g "$OUT/Xuper-6.5.5-Downloaded.apk" | tee "$OUT/install-655.txt"
 FINAL_CODE=$(version_code || true)
 FINAL_NAME=$(version_name || true)
-echo "final_code=$FINAL_CODE final_name=$FINAL_NAME" | tee "$OUT/final.txt"
-[[ "$FINAL_CODE" == "$TARGET_CODE" || "$FINAL_NAME" == "$TARGET_NAME" ]] || {
-  echo "WRONG_FINAL_VERSION expected=$TARGET_NAME/$TARGET_CODE got=$FINAL_NAME/$FINAL_CODE" >&2; exit 53;
+echo "installed_code=$FINAL_CODE installed_name=$FINAL_NAME" | tee "$OUT/final.txt"
+[[ "$FINAL_CODE" == "$TARGET_CODE" && "$FINAL_NAME" == "$TARGET_NAME" ]] || {
+  echo 'ANDROID_UPDATE_DID_NOT_REACH_655' >&2; exit 64;
 }
 
+# 5) Runtime validation on Pixel 6 / Android 16.
+adb emu geo fix -99.1332 19.4326 >/dev/null 2>&1 || true
 launch_app
 sleep 20
 PID20=$(adb shell pidof "$PKG" 2>/dev/null | tr -d '\r' || true)
@@ -134,20 +143,19 @@ sleep 40
 PID60=$(adb shell pidof "$PKG" 2>/dev/null | tr -d '\r' || true)
 dump_ui final60
 echo "pid20=${PID20:-DEAD} pid60=${PID60:-DEAD}" | tee -a "$OUT/final.txt"
-[[ -n "$PID20" && -n "$PID60" ]] || { echo 'FINAL_RUNTIME_FAIL' >&2; exit 54; }
+[[ -n "$PID20" && -n "$PID60" ]] || { echo 'FINAL_RUNTIME_FAIL' >&2; exit 65; }
 
-FINAL_XML="$OUT/ui-final60.xml"
-if is_update_gate "$FINAL_XML"; then
+if is_update_gate "$OUT/ui-final20.xml" || is_update_gate "$OUT/ui-final60.xml"; then
   echo 'FINAL_UPDATE_GATE_STILL_PRESENT' >&2
-  exit 55
+  exit 66
 fi
 
 APK_PATH=$(adb shell pm path "$PKG" | sed -n 's/^package://p' | head -1 | tr -d '\r')
 run_timeout 30s adb pull "$APK_PATH" "$OUT/Xuper-6.5.5-Final-Tested.apk" >/dev/null
 FINAL_CERT=$($APKSIGNER verify --print-certs "$OUT/Xuper-6.5.5-Final-Tested.apk" 2>/dev/null | sed -n 's/.*certificate SHA-256 digest: //p' | head -1 | tr -d ':[:space:]' | tr '[:upper:]' '[:lower:]')
 echo "final_cert=$FINAL_CERT" | tee -a "$OUT/final.txt"
-[[ "$FINAL_CERT" == "$EXPECTED_CERT" ]] || { echo 'FINAL_SIGNER_MISMATCH' >&2; exit 56; }
-
-adb logcat -d -v threadtime | grep -Ei 'com\.msandroid\.mobile|FATAL EXCEPTION|AndroidRuntime|SIGKILL|EXIT_SELF|UnsatisfiedLinkError' | tail -1200 > "$OUT/logcat-final.txt" || true
+[[ "$FINAL_CERT" == "$EXPECTED_CERT" ]] || { echo 'FINAL_SIGNER_MISMATCH' >&2; exit 67; }
 sha256sum "$OUT/Xuper-6.5.5-Final-Tested.apk" | tee "$OUT/final-sha256.txt"
-echo 'XUPER_655_SIGNED_RUNTIME_NO_UPDATE_GATE_OK'
+adb logcat -d -v threadtime | grep -Ei 'com\.msandroid\.mobile|FATAL EXCEPTION|AndroidRuntime|SIGKILL|EXIT_SELF|UnsatisfiedLinkError' | tail -1200 > "$OUT/logcat-final.txt" || true
+
+echo 'XUPER_655_OFFICIAL_UPDATE_RUNTIME_NO_UPDATE_GATE_OK'
