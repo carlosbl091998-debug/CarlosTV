@@ -60,7 +60,7 @@ jobs:
           sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm
 
-      - name: Test three Magis 6.2.4 update-gate patches on Pixel 6 Android 16
+      - name: Deep Magis 6.2.4 runtime analysis on Pixel 6 Android 16
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 36
@@ -70,27 +70,29 @@ jobs:
           disable-animations: true
           force-avd-creation: false
           emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
-          script: bash tools/test_magis_624_permission_wrapper.sh
+          script: bash tools/test_magis_624_deep.sh
 
-      - name: Summarize result
+      - name: Summarize deep result
         if: always()
         shell: bash
         run: |
-          echo '=== RESULT ==='
-          cat diagnostics-update/result.txt 2>/dev/null || true
-          cat diagnostics-update/baseline-result.txt 2>/dev/null || true
-          cat diagnostics-update/winner.txt 2>/dev/null || true
-          cat diagnostics-update/standalone-result.txt 2>/dev/null || true
-          find diagnostics-update -maxdepth 2 -type f -name '*TESTED*' -o -name '*result.txt' | sort || true
+          echo '=== STATIC RUNTIME RESULTS ==='
+          cat diagnostics-deep/static-results.txt 2>/dev/null || true
+          echo '=== FRIDA UPDATE CLASSES ==='
+          cat diagnostics-deep/frida/update-classes.txt 2>/dev/null || true
+          echo '=== DEX DUMP HITS ==='
+          cat diagnostics-deep/dexdump-hits.txt 2>/dev/null || true
+          echo '=== FILES ==='
+          find diagnostics-deep -maxdepth 3 -type f | sort || true
 
-      - name: Upload Magis 6.2.4 test results
+      - name: Upload Magis 6.2.4 deep diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: magis-624-no-update-android16
+          name: magis-624-deep-android16
           retention-days: 7
           if-no-files-found: warn
           path: |
             recovered-badging.txt
             recovered-signing.txt
-            diagnostics-update/**
+            diagnostics-deep/**
