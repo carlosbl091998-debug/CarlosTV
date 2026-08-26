@@ -1,0 +1,173 @@
+name: Observe Xuper network destinations
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  observe-network:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install packet analyzer
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo 'wireshark-common wireshark-common/install-setuid boolean false' | sudo debconf-set-selections
+          sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tshark
+
+      - name: Download exact Xuper 4.34.5 package mirror
+        shell: bash
+        run: |
+          set -euxo pipefail
+          PAGE='https://www.mediafire.com/file/azgvigddkzvrss4/Xuper_4.34.5_%28com.android.mgstv%29.apk/file'
+          curl -fL --retry 3 -A 'Mozilla/5.0' "$PAGE" -o mf.html
+          python3 - <<'PY' > direct.txt
+          import html,re
+          t=html.unescape(open('mf.html',encoding='utf-8',errors='ignore').read()).replace('\\/','/')
+          for p in [r'id=[\"\']downloadButton[\"\'][^>]*href=[\"\']([^\"\']+)',r'href=[\"\']([^\"\']+)[\"\'][^>]*id=[\"\']downloadButton[\"\']']:
+              m=re.search(p,t,re.I)
+              if m:
+                  print(m.group(1)); break
+          PY
+          test -s direct.txt
+          curl -fL --retry 3 -A 'Mozilla/5.0' "$(cat direct.txt)" -o base.apk
+          unzip -t base.apk >/dev/null
+
+      - name: Verify exact APK contents
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib,sys,zipfile
+          expected='165d2aeefe3bcc4b79c839708d82d41fd8e0dc6259acd3116cf8a3a00ea8c25f'
+          with zipfile.ZipFile('base.apk') as z:
+              names=sorted(n for n in z.namelist() if not n.upper().startswith('META-INF/'))
+              h=hashlib.sha256()
+              for n in names:
+                  d=z.read(n); h.update(n.encode()+b'\0'+hashlib.sha256(d).digest())
+              got=h.hexdigest()
+          print('logical_sha256=',got)
+          if got != expected: sys.exit('APK content mismatch')
+          print('CONTENT_MATCH_OK')
+          PY
+
+      - name: Extract non-sensitive static network hints
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p network-observation
+          python3 - <<'PY'
+          import re, zipfile
+          from pathlib import Path
+          from urllib.parse import urlsplit
+
+          domain_re=re.compile(rb'(?i)(?<![A-Za-z0-9_-])(?:[A-Za-z0-9-]{1,63}\.)+[A-Za-z]{2,24}(?![A-Za-z0-9_-])')
+          url_re=re.compile(rb'(?i)https?://[^\s\"\'<>]{4,500}')
+          api_re=re.compile(rb'(?i)/(?:api|v[0-9]+|portal|live|vod|movie|series|auth|login)/[A-Za-z0-9_./?=&%+-]{1,240}')
+          domains=set(); urls=set(); paths=set(); sources=[]
+          with zipfile.ZipFile('base.apk') as z:
+              for name in z.namelist():
+                  if name.upper().startswith('META-INF/'):
+                      continue
+                  try: data=z.read(name)
+                  except Exception: continue
+                  local_domains=set()
+                  for m in domain_re.findall(data):
+                      try:
+                          d=m.decode('ascii','ignore').lower().rstrip('.')
+                          if len(d) <= 253:
+                              domains.add(d); local_domains.add(d)
+                      except Exception: pass
+                  for m in url_re.findall(data):
+                      try:
+                          s=m.decode('utf-8','ignore')
+                          u=urlsplit(s)
+                          if u.hostname:
+                              # Deliberately discard query/fragment/userinfo so tokens or credentials are never exported.
+                              clean=f'{u.scheme.lower()}://{u.hostname.lower()}'
+                              if u.port: clean += f':{u.port}'
+                              clean += u.path or '/'
+                              urls.add(clean)
+                      except Exception: pass
+                  for m in api_re.findall(data):
+                      try:
+                          p=m.decode('utf-8','ignore').split('?',1)[0]
+                          paths.add(p)
+                      except Exception: pass
+                  if local_domains:
+                      sources.append(name + ': ' + ', '.join(sorted(local_domains)))
+          Path('network-observation/static-domains.txt').write_text('\n'.join(sorted(domains)),encoding='utf-8')
+          Path('network-observation/static-urls-sanitized.txt').write_text('\n'.join(sorted(urls)),encoding='utf-8')
+          Path('network-observation/static-path-hints.txt').write_text('\n'.join(sorted(paths)),encoding='utf-8')
+          Path('network-observation/static-domain-sources.txt').write_text('\n'.join(sources),encoding='utf-8')
+          print('static_domains=',len(domains),'urls=',len(urls),'paths=',len(paths))
+          PY
+
+      - name: Enable KVM
+        shell: bash
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Run untouched APK and record packet metadata
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          force-avd-creation: false
+          emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none -tcpdump xuper-network.pcap
+          script: bash tools/observe_xuper_network.sh
+
+      - name: Reduce packet capture to host metadata only
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p network-observation
+          START=$(cat network-observation/launch-epoch.txt 2>/dev/null || echo 0)
+          FILTER="frame.time_epoch >= $START"
+          tshark -r xuper-network.pcap -Y "$FILTER && dns.qry.name" -T fields -e dns.qry.name 2>/dev/null | sed '/^$/d' | sort -fu > network-observation/runtime-dns-hosts.txt
+          tshark -r xuper-network.pcap -Y "$FILTER && tls.handshake.extensions_server_name" -T fields -e tls.handshake.extensions_server_name 2>/dev/null | sed '/^$/d' | sort -fu > network-observation/runtime-tls-sni.txt
+          tshark -r xuper-network.pcap -Y "$FILTER && http.host" -T fields -e http.host 2>/dev/null | sed '/^$/d' | sort -fu > network-observation/runtime-http-hosts.txt
+          tshark -r xuper-network.pcap -Y "$FILTER && ip.dst" -T fields -e ip.dst 2>/dev/null | sed '/^$/d' | sort -u > network-observation/runtime-destination-ips.txt
+          {
+            cat network-observation/runtime-dns-hosts.txt
+            cat network-observation/runtime-tls-sni.txt
+            cat network-observation/runtime-http-hosts.txt
+          } | sed '/^$/d' | tr '[:upper:]' '[:lower:]' | sort -u > network-observation/runtime-hosts-all.txt
+          # Never publish packet payloads. The pcap is intentionally destroyed after reducing it to host/IP metadata.
+          rm -f xuper-network.pcap
+          echo '=== runtime hosts ==='
+          cat network-observation/runtime-hosts-all.txt || true
+          echo '=== app UID socket destinations ==='
+          cat network-observation/app-remote-endpoints.txt || true
+          echo '=== static domains ==='
+          cat network-observation/static-domains.txt || true
+
+      - name: Upload sanitized observation only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xuper-network-observation-sanitized
+          retention-days: 7
+          if-no-files-found: warn
+          path: network-observation/**
