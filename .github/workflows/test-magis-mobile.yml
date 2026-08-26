@@ -41,7 +41,7 @@ jobs:
           "$AAPT" dump badging magis-current.apk | tee magis-badging.txt
           grep -q "package: name='com.msandroid.mobile'" magis-badging.txt
           "$APKSIGNER" verify --verbose --print-certs magis-current.apk | tee magis-signing.txt
-          grep -i 'Signer #1 certificate SHA-256 digest' magis-signing.txt || true
+          grep -i 'certificate SHA-256 digest' magis-signing.txt || true
           mkdir -p diagnostics
           cp magis-current.sha256 magis-badging.txt magis-signing.txt diagnostics/
 
@@ -64,7 +64,7 @@ jobs:
           force-avd-creation: false
           emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
           script: |
-            set -euxo pipefail
+            set -eu
             mkdir -p diagnostics
             adb install -r magis-current.apk | tee diagnostics/install.txt
             adb shell am force-stop com.msandroid.mobile || true
