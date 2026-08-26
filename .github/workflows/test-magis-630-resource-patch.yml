@@ -3,6 +3,8 @@ name: Test Magis 6.3.0 resource-only patch
 on:
   pull_request:
     branches: [ main ]
+  push:
+    branches: [ magis-mobile-recovery ]
   workflow_dispatch:
 
 permissions:
@@ -104,7 +106,7 @@ jobs:
             set -eux
             mkdir -p diagnostics
             PKG='com.msandroid.mobile'
-            ACT='com.mobile.iptv.activity.SplashAty'
+            ACT='com.mobile.brasiltv.activity.SplashAty'
             test_case() {
               name="$1"; apk="$2"
               adb uninstall "$PKG" >/dev/null 2>&1 || true
@@ -116,7 +118,8 @@ jobs:
               p1=$(adb shell pidof "$PKG" 2>/dev/null | tr -d '\r' || true)
               sleep 20
               p2=$(adb shell pidof "$PKG" 2>/dev/null | tr -d '\r' || true)
-              echo "$name pid12=${p1:-DEAD} pid32=${p2:-DEAD}" | tee -a diagnostics/results.txt
+              top=$(adb shell dumpsys activity activities | grep -m1 'mResumedActivity' || true)
+              echo "$name pid12=${p1:-DEAD} pid32=${p2:-DEAD} top=${top:-NONE}" | tee -a diagnostics/results.txt
               adb exec-out screencap -p >"diagnostics/${name}.png" || true
               adb shell uiautomator dump /sdcard/${name}.xml >/dev/null 2>&1 || true
               adb pull /sdcard/${name}.xml "diagnostics/${name}.xml" >/dev/null 2>&1 || true
