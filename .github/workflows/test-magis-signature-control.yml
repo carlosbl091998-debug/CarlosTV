@@ -74,29 +74,7 @@ jobs:
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
-          script: |
-            set -euxo pipefail
-            mkdir -p diagnostics-signature
-            adb install -r -g magis-original.apk
-            adb logcat -c
-            adb shell am force-stop com.msandroid.mobile
-            adb shell monkey -p com.msandroid.mobile -c android.intent.category.LAUNCHER 1 || true
-            sleep 20
-            ORIG_PID=$(adb shell pidof com.msandroid.mobile | tr -d '\r' || true)
-            echo "ORIGINAL_PID=$ORIG_PID" | tee diagnostics-signature/original.txt
-            adb logcat -d > diagnostics-signature/original-logcat.txt || true
-            adb uninstall com.msandroid.mobile || true
-            adb install -r -g magis-resigned.apk
-            adb logcat -c
-            adb shell am force-stop com.msandroid.mobile
-            adb shell monkey -p com.msandroid.mobile -c android.intent.category.LAUNCHER 1 || true
-            sleep 20
-            RESIGNED_PID=$(adb shell pidof com.msandroid.mobile | tr -d '\r' || true)
-            echo "RESIGNED_PID=$RESIGNED_PID" | tee diagnostics-signature/resigned.txt
-            adb logcat -d > diagnostics-signature/resigned-logcat.txt || true
-            grep -Ei 'EXIT_SELF|signature|certificate|tamper|verify|protect|shell' diagnostics-signature/resigned-logcat.txt | tail -200 > diagnostics-signature/resigned-interesting.txt || true
-            echo "ORIGINAL=$ORIG_PID RESIGNED=$RESIGNED_PID"
-            test -n "$ORIG_PID"
+          script: bash tools/test_magis_signature_control.sh
       - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v4
