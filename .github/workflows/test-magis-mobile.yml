@@ -1,4 +1,4 @@
-name: Test Magis mobile candidate
+name: Test Magis official mobile update chain
 
 on:
   pull_request:
@@ -9,9 +9,9 @@ permissions:
   contents: read
 
 jobs:
-  validate-magis-mobile:
+  validate-magis-official-update:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
 
@@ -22,7 +22,7 @@ jobs:
 
       - uses: android-actions/setup-android@v3
 
-      - name: Download current mobile candidate
+      - name: Download signed Magis bootstrap candidate
         shell: bash
         run: |
           set -euxo pipefail
@@ -30,7 +30,6 @@ jobs:
             'https://tinyurl.com/Magis-TV-File' -o magis-current.apk
           unzip -t magis-current.apk >/dev/null
           sha256sum magis-current.apk | tee magis-current.sha256
-          ls -lh magis-current.apk
 
       - name: Validate package and signing identity
         shell: bash
@@ -41,9 +40,8 @@ jobs:
           "$AAPT" dump badging magis-current.apk | tee magis-badging.txt
           grep -q "package: name='com.msandroid.mobile'" magis-badging.txt
           "$APKSIGNER" verify --verbose --print-certs magis-current.apk | tee magis-signing.txt
-          grep -i 'certificate SHA-256 digest' magis-signing.txt || true
-          mkdir -p diagnostics
-          cp magis-current.sha256 magis-badging.txt magis-signing.txt diagnostics/
+          mkdir -p diagnostics-update
+          cp magis-current.sha256 magis-badging.txt magis-signing.txt diagnostics-update/
 
       - name: Enable KVM
         shell: bash
@@ -53,7 +51,7 @@ jobs:
           sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm
 
-      - name: Runtime smoke test on Android 16 phone
+      - name: Follow Magis official update flow and smoke test result
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 36
@@ -63,15 +61,19 @@ jobs:
           disable-animations: true
           force-avd-creation: false
           emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
-          script: bash tools/test_magis_mobile.sh
+          script: bash tools/test_magis_update_chain.sh
 
-      - name: Upload diagnostics and candidate
+      - name: Remove third-party APK binaries from diagnostics
+        if: always()
+        shell: bash
+        run: |
+          find diagnostics-update -type f -name '*.apk' -delete 2>/dev/null || true
+
+      - name: Upload update diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: magis-mobile-runtime-test
+          name: magis-official-update-diagnostics
           retention-days: 7
           if-no-files-found: warn
-          path: |
-            diagnostics/**
-            magis-current.apk
+          path: diagnostics-update/**
