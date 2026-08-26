@@ -21,10 +21,11 @@ adb shell 'pkill -9 frida-server || true; nohup /data/local/tmp/frida-server >/d
 sleep 3
 frida-ps -Uai | tee diagnostics624/frida-ps-before.txt || true
 
-# Spawn through Frida immediately. The previous flow launched the app first,
-# waited 20 seconds and only then attached, by which point 6.2.4 had exited.
+# Spawn through Frida immediately. Cap the dump so CI always returns diagnostics.
 set +e
-frida-dexdump -U -f com.msandroid.mobile -o diagnostics624/dexdump 2>&1 | tee diagnostics624/frida-dexdump.txt
+timeout --signal=INT --kill-after=10s 45s \
+  frida-dexdump -U -f com.msandroid.mobile -o diagnostics624/dexdump \
+  2>&1 | tee diagnostics624/frida-dexdump.txt
 rc=${PIPESTATUS[0]}
 set -e
 echo "frida-dexdump rc=$rc" | tee diagnostics624/frida-dexdump-rc.txt
@@ -42,5 +43,5 @@ grep -RIna --binary-files=text -E 'handleForceUpgrade|handleUpgradeBussiness|Com
   > diagnostics624/upgrade-symbol-hits.txt || true
 head -300 diagnostics624/upgrade-symbol-hits.txt || true
 
-# This job is only successful if at least one runtime DEX was actually recovered.
+# Success means at least one runtime DEX was actually recovered.
 test -n "$(find diagnostics624/dexdump -type f -name '*.dex' -print -quit)"
