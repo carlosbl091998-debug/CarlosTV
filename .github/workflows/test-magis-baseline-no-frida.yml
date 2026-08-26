@@ -1,0 +1,105 @@
+name: Test Magis 6.2.4 baseline no Frida
+
+on:
+  push:
+    branches: [ magis-runtime-spawn-dump-v4 ]
+  workflow_dispatch:
+
+concurrency:
+  group: magis-baseline-no-frida-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  baseline-no-frida:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Recover exact official Magis 6.2.4
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          ARTIFACT_ID=9590851522
+          EXPECTED_SHA=04bda60a0ebb003d1442483401978f39b601d989004d7b5e9c1f213a127d8835
+          mkdir -p diagnostics-baseline /tmp/magis624
+          curl -fL --retry 4 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
+            -o /tmp/magis624.zip
+          unzip -q /tmp/magis624.zip -d /tmp/magis624
+          cp /tmp/magis624/Xuper-Mobile-Official-Successor-Tested.apk Magis-6.2.4.apk
+          echo "${EXPECTED_SHA}  Magis-6.2.4.apk" | sha256sum -c -
+
+      - name: Enable KVM
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run official APK without Frida
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          force-avd-creation: false
+          emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          script: |
+            set -euxo pipefail
+            adb wait-for-device
+            adb shell getprop ro.product.cpu.abilist | tee diagnostics-baseline/emulator-abilist.txt
+            adb shell getprop ro.dalvik.vm.native.bridge | tee diagnostics-baseline/native-bridge.txt
+            adb install -r Magis-6.2.4.apk | tee diagnostics-baseline/install.txt
+            adb shell pm clear com.msandroid.mobile || true
+            adb emu geo fix -99.1332 19.4326 >/dev/null 2>&1 || true
+            adb logcat -c
+            adb shell am start -n com.msandroid.mobile/com.mobile.brasiltv.activity.SplashAty | tee diagnostics-baseline/am-start.txt
+            seen=0
+            for i in $(seq 1 200); do
+              p=$(adb shell pidof com.msandroid.mobile 2>/dev/null | tr -d '\r' || true)
+              if [ -n "$p" ]; then
+                echo "iteration=$i pid=$p" | tee -a diagnostics-baseline/pid-history.txt
+                seen=1
+              fi
+              sleep 0.1
+            done
+            sleep 10
+            p20=$(adb shell pidof com.msandroid.mobile 2>/dev/null | tr -d '\r' || true)
+            echo "pid_after_30s=${p20:-DEAD}" | tee diagnostics-baseline/result.txt
+            adb shell dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity' | tee diagnostics-baseline/resumed.txt || true
+            adb shell uiautomator dump /sdcard/window.xml >/dev/null 2>&1 || true
+            adb pull /sdcard/window.xml diagnostics-baseline/window.xml >/dev/null 2>&1 || true
+            adb exec-out screencap -p > diagnostics-baseline/screen.png || true
+            adb logcat -d -v threadtime > diagnostics-baseline/logcat.txt || true
+            grep -E 'FATAL EXCEPTION|zygote64|ZygoteFailure|Fatal signal|AndroidRuntime|com.msandroid.mobile|SplashAty|SIGABRT|SIGSEGV|UnsatisfiedLinkError' diagnostics-baseline/logcat.txt > diagnostics-baseline/logcat-focus.txt || true
+            test "$seen" -eq 1
+            test -n "$p20"
+
+      - name: Upload baseline diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: magis-624-baseline-no-frida
+          retention-days: 7
+          if-no-files-found: warn
+          path: diagnostics-baseline/**
