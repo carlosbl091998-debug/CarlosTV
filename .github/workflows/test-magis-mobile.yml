@@ -63,47 +63,7 @@ jobs:
           disable-animations: true
           force-avd-creation: false
           emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
-          script: |
-            set -eu
-            mkdir -p diagnostics
-            timeout 45s adb install -r magis-current.apk | tee diagnostics/install.txt
-            adb shell am force-stop com.msandroid.mobile || true
-            LAUNCH='com.msandroid.mobile/com.mobile.brasiltv.activity.SplashAty'
-            echo "launcher=$LAUNCH" | tee diagnostics/runtime.txt
-            timeout 20s adb shell am start -W -n "$LAUNCH" | tee diagnostics/start.txt || true
-
-            sleep 10
-            PID10=$(adb shell pidof com.msandroid.mobile | tr -d '\r' || true)
-            echo "pid_10s=${PID10:-DEAD}" | tee -a diagnostics/runtime.txt
-            timeout 10s adb shell uiautomator dump /sdcard/magis-10.xml >/dev/null 2>&1 || true
-            timeout 10s adb pull /sdcard/magis-10.xml diagnostics/ui-10.xml >/dev/null 2>&1 || true
-            timeout 10s adb exec-out screencap -p > diagnostics/screen-10.png || true
-
-            sleep 20
-            PID30=$(adb shell pidof com.msandroid.mobile | tr -d '\r' || true)
-            echo "pid_30s=${PID30:-DEAD}" | tee -a diagnostics/runtime.txt
-            timeout 10s adb shell uiautomator dump /sdcard/magis-30.xml >/dev/null 2>&1 || true
-            timeout 10s adb pull /sdcard/magis-30.xml diagnostics/ui-30.xml >/dev/null 2>&1 || true
-            timeout 10s adb exec-out screencap -p > diagnostics/screen-30.png || true
-            timeout 10s adb logcat -d -v threadtime | grep -Ei 'com\.msandroid\.mobile|FATAL EXCEPTION|AndroidRuntime|SIGKILL|EXIT_SELF|UnsatisfiedLinkError' | tail -500 > diagnostics/logcat-relevant.txt || true
-
-            adb shell dumpsys package com.msandroid.mobile | grep -E 'versionName=|versionCode=' | head -10 > diagnostics/installed-version.txt || true
-            python3 - <<'PY'
-            from pathlib import Path
-            import re
-            out=[]
-            for fn in ('diagnostics/ui-10.xml','diagnostics/ui-30.xml'):
-                p=Path(fn)
-                t=p.read_text(errors='ignore') if p.exists() else ''
-                vals=re.findall(r'text="([^"]*)"',t)
-                out.append(fn+':')
-                out.extend('  '+v for v in vals if v.strip())
-            Path('diagnostics/ui-text.txt').write_text('\n'.join(out),encoding='utf-8')
-            PY
-            cat diagnostics/ui-text.txt || true
-
-            test -n "$PID10"
-            test -n "$PID30"
+          script: bash tools/test_magis_mobile.sh
 
       - name: Upload diagnostics and candidate
         if: always()
