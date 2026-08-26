@@ -1,6 +1,8 @@
 name: Validate Xuper 6.5.5 on Android 16
 
 on:
+  push:
+    branches: [ main ]
   pull_request:
     branches: [ main ]
   issue_comment:
@@ -12,7 +14,7 @@ permissions:
 
 jobs:
   validate-xuper-655:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || (github.event.issue.pull_request && github.event.comment.body == '/validate-xuper-655') }}
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || (github.event.issue.pull_request && github.event.comment.body == '/validate-xuper-655') }}
     runs-on: ubuntu-latest
     timeout-minutes: 55
     steps:
