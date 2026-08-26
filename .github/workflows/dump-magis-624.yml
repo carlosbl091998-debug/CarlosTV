@@ -1,0 +1,133 @@
+name: Dump Magis 6.2.4 runtime DEX
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dump-magis-624:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Obtain Magis 6.2.4 without upgrading
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p diagnostics624
+          urls=(
+            'https://aftv.news/4721725'
+            'https://aftvnews.com/4721725'
+            'https://appteka.store/apps/cb8r309715/download'
+          )
+          ok=0
+          for u in "${urls[@]}"; do
+            rm -f candidate.apk
+            echo "Trying $u" | tee -a diagnostics624/download-sources.txt
+            if curl -fL --connect-timeout 15 --max-time 180 --retry 2 --retry-all-errors -A 'Mozilla/5.0' "$u" -o candidate.apk; then
+              if unzip -t candidate.apk >/dev/null 2>&1; then
+                AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)
+                APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+                "$AAPT" dump badging candidate.apk > diagnostics624/candidate-badging.txt || true
+                "$APKSIGNER" verify --verbose --print-certs candidate.apk > diagnostics624/candidate-signing.txt 2>&1 || true
+                if grep -q "package: name='com.msandroid.mobile' versionCode='60204' versionName='6.2.4'" diagnostics624/candidate-badging.txt \
+                   && grep -qi 'd30dc60fd8625d49fa4e82eb442c9307743f9621004b94e229dcc01f6a9035ff' diagnostics624/candidate-signing.txt; then
+                  mv candidate.apk Magis-6.2.4.apk
+                  ok=1
+                  break
+                fi
+              fi
+            fi
+          done
+          test "$ok" = 1
+          sha256sum Magis-6.2.4.apk | tee diagnostics624/magis624-sha256.txt
+          cat diagnostics624/candidate-badging.txt
+          cat diagnostics624/candidate-signing.txt
+
+      - name: Install Frida tools
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install 'frida==17.2.17' 'frida-tools==14.4.5' frida-dexdump
+          frida --version | tee diagnostics624/frida-version.txt
+
+      - name: Enable KVM
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Run 6.2.4 and dump decrypted DEX
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          force-avd-creation: false
+          emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          script: |
+            set -euxo pipefail
+            mkdir -p diagnostics624/dexdump
+            adb root || true
+            adb wait-for-device
+            adb install -r Magis-6.2.4.apk | tee diagnostics624/install.txt
+            adb shell pm clear com.msandroid.mobile || true
+
+            FRIDA_VERSION=17.2.17
+            curl -fL --retry 3 --retry-all-errors \
+              "https://github.com/frida/frida/releases/download/${FRIDA_VERSION}/frida-server-${FRIDA_VERSION}-android-x86_64.xz" \
+              -o /tmp/frida-server.xz
+            xz -dc /tmp/frida-server.xz > /tmp/frida-server
+            chmod +x /tmp/frida-server
+            adb push /tmp/frida-server /data/local/tmp/frida-server
+            adb shell chmod 755 /data/local/tmp/frida-server
+            adb shell 'pkill -9 frida-server || true; nohup /data/local/tmp/frida-server >/data/local/tmp/frida.log 2>&1 &' || true
+            sleep 3
+            frida-ps -Uai | tee diagnostics624/frida-ps-before.txt || true
+
+            adb shell monkey -p com.msandroid.mobile -c android.intent.category.LAUNCHER 1 || true
+            sleep 18
+            adb shell dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity' | tee diagnostics624/resumed.txt || true
+            adb shell pidof com.msandroid.mobile | tee diagnostics624/pid.txt || true
+            adb shell uiautomator dump /sdcard/window.xml || true
+            adb pull /sdcard/window.xml diagnostics624/window-before.xml || true
+
+            set +e
+            frida-dexdump -U -n com.msandroid.mobile -o diagnostics624/dexdump 2>&1 | tee diagnostics624/frida-dexdump.txt
+            rc=${PIPESTATUS[0]}
+            set -e
+            echo "frida-dexdump rc=$rc" | tee diagnostics624/frida-dexdump-rc.txt
+
+            find diagnostics624/dexdump -type f -name '*.dex' -print -exec sha256sum {} \; | tee diagnostics624/dex-files.txt || true
+            grep -RIna --binary-files=text -E 'handleForceUpgrade|handleUpgradeBussiness|CommonUpgradeDialog|UpgradeDialog|forceUpdate|getForceUpdate|hasNewVersion|dialog_common_upgrade' diagnostics624/dexdump \
+              > diagnostics624/upgrade-symbol-hits.txt || true
+            head -200 diagnostics624/upgrade-symbol-hits.txt || true
+            test -n "$(find diagnostics624/dexdump -type f -name '*.dex' -print -quit)"
+
+      - name: Upload runtime dump and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: magis-624-runtime-dexdump
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            diagnostics624/**
