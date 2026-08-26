@@ -10,8 +10,12 @@ adb shell pm clear com.msandroid.mobile || true
 adb emu geo fix -99.1332 19.4326 >/dev/null 2>&1 || true
 adb logcat -c || true
 
-adb shell am start -n com.msandroid.mobile/com.mobile.brasiltv.activity.SplashAty \
-  | tee diagnostics-baseline/am-start.txt || true
+set +e
+timeout 8s adb shell am start -n com.msandroid.mobile/com.mobile.brasiltv.activity.SplashAty \
+  2>&1 | tee diagnostics-baseline/am-start.txt
+am_rc=${PIPESTATUS[0]}
+set -e
+echo "am_start_rc=$am_rc" | tee diagnostics-baseline/am-start-rc.txt
 
 sleep 3
 p3=$(timeout 3s adb shell pidof com.msandroid.mobile 2>/dev/null | tr -d '\r' || true)
