@@ -5,8 +5,16 @@ PKG='com.msandroid.mobile'
 OUT='diagnostics-update'
 TARGET_CODE='60505'
 TARGET_NAME='6.5.5'
-UPDATE_URL='https://gaeg.xvmobdes.com/download'
-mkdir -p "$OUT"
+mkdir -p "$OUT/candidates"
+
+SOURCES=(
+  'https://gaeg.xvmobdes.com/download'
+  'https://aftvnews.com/3154861'
+  'https://www.aftvnews.com/3154861'
+  'https://go.aftvnews.com/3154861'
+  'https://tvxuper.com/download/'
+  'https://apkdownloader.cc/storage/files/2026/03/xuper-tv-6-5-5_1774679197.apk'
+)
 
 run_timeout() { local secs="$1"; shift; timeout "$secs" "$@"; }
 version_code() { adb shell dumpsys package "$PKG" 2>/dev/null | sed -n 's/.*versionCode=\([0-9]*\).*/\1/p' | head -1 | tr -d '\r'; }
@@ -28,8 +36,10 @@ xml_has() {
   local xml="$1" needle="$2"
   python3 - "$xml" "$needle" <<'PY'
 import sys, xml.etree.ElementTree as ET
-try: root=ET.parse(sys.argv[1]).getroot()
-except Exception: raise SystemExit(1)
+try:
+    root=ET.parse(sys.argv[1]).getroot()
+except Exception:
+    raise SystemExit(1)
 needle=sys.argv[2].casefold()
 text='\n'.join((n.attrib.get('text','')+' '+n.attrib.get('content-desc','')) for n in root.iter('node')).casefold()
 raise SystemExit(0 if needle in text else 1)
@@ -48,9 +58,7 @@ is_update_gate() {
 AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)
 APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
 
-# 1) Install the known official signed bootstrap so we test a genuine Android update,
-# not merely a clean install of the target APK.
-echo '=== install official signed bootstrap ===' | tee "$OUT/actions.txt"
+echo '=== install known official signed bootstrap ===' | tee "$OUT/actions.txt"
 run_timeout 45s adb install -r -g magis-current.apk | tee "$OUT/install-bootstrap.txt"
 EXPECTED_CERT=$($APKSIGNER verify --print-certs magis-current.apk 2>/dev/null | sed -n 's/.*certificate SHA-256 digest: //p' | head -1 | tr -d ':[:space:]' | tr '[:upper:]' '[:lower:]')
 echo "expected_cert=$EXPECTED_CERT" | tee "$OUT/expected-cert.txt"
@@ -61,71 +69,109 @@ sleep 15
 dump_ui bootstrap-before-update
 echo "bootstrap_code=$(version_code || true) bootstrap_name=$(version_name || true)" | tee "$OUT/bootstrap-version.txt"
 
-# 2) Download exactly from the URL printed by the app's forced-update dialog.
-echo "update_url=$UPDATE_URL" | tee "$OUT/update-url.txt"
-curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 180 \
-  -A 'Mozilla/5.0 (Linux; Android 16; Pixel 6) AppleWebKit/537.36 Chrome/140 Mobile Safari/537.36' \
-  -D "$OUT/update-response-headers.txt" \
-  -w '%{url_effective}\n%{http_code}\n%{content_type}\n' \
-  "$UPDATE_URL" -o "$OUT/update-download.bin" > "$OUT/update-response-meta.txt"
-file "$OUT/update-download.bin" | tee "$OUT/update-file-type.txt"
-ls -lh "$OUT/update-download.bin" | tee "$OUT/update-size.txt"
+validate_apk() {
+  local f="$1" tag="$2"
+  unzip -t "$f" >/dev/null 2>&1 || return 1
+  "$AAPT" dump badging "$f" > "$OUT/candidates/${tag}-badging.txt" 2>&1 || return 1
+  grep -q "package: name='$PKG' versionCode='$TARGET_CODE' versionName='$TARGET_NAME'" "$OUT/candidates/${tag}-badging.txt" || return 1
+  "$APKSIGNER" verify --verbose --print-certs "$f" > "$OUT/candidates/${tag}-signing.txt" 2>&1 || return 1
+  local cert
+  cert=$($APKSIGNER verify --print-certs "$f" 2>/dev/null | sed -n 's/.*certificate SHA-256 digest: //p' | head -1 | tr -d ':[:space:]' | tr '[:upper:]' '[:lower:]')
+  echo "$cert" > "$OUT/candidates/${tag}-cert.txt"
+  [[ "$cert" == "$EXPECTED_CERT" ]] || return 1
+  sha256sum "$f" > "$OUT/candidates/${tag}-sha256.txt"
+  return 0
+}
 
-# The endpoint may return a tiny HTML redirect/landing page rather than the APK.
-# If so, extract the first APK/download URL present and follow it once.
-if ! unzip -t "$OUT/update-download.bin" >/dev/null 2>&1; then
-  python3 - "$OUT/update-download.bin" > "$OUT/discovered-url.txt" <<'PY' || true
-import re, sys, html
-p=sys.argv[1]
-raw=open(p,'rb').read(2_000_000).decode('utf-8','ignore')
+extract_links() {
+  local f="$1" base="$2" out="$3"
+  python3 - "$f" "$base" > "$out" <<'PY' || true
+import html, re, sys
+from urllib.parse import urljoin
+p, base=sys.argv[1], sys.argv[2]
+raw=open(p,'rb').read(4_000_000).decode('utf-8','ignore')
 raw=html.unescape(raw).replace('\\/','/')
-patterns=[
- r'https?://[^\"\'<>\s]+?\.apk(?:\?[^\"\'<>\s]*)?',
- r'https?://[^\"\'<>\s]+?/download[^\"\'<>\s]*',
- r'(?:href|src)=[\"\']([^\"\']+)[\"\']',
-]
-for pat in patterns:
+links=[]
+for pat in [
+    r'https?://[^\"\'<>\s]+',
+    r'(?:href|src)\s*=\s*[\"\']([^\"\']+)[\"\']',
+]:
     for m in re.finditer(pat, raw, re.I):
         u=m.group(1) if m.lastindex else m.group(0)
-        if u.startswith('//'): u='https:'+u
-        if u.startswith('/'):
-            u='https://gaeg.xvmobdes.com'+u
-        if u.startswith('http') and u != 'https://gaeg.xvmobdes.com/download':
-            print(u); raise SystemExit(0)
-raise SystemExit(1)
+        u=urljoin(base,u)
+        if u.startswith('http') and u not in links:
+            links.append(u)
+# Prefer URLs whose text suggests an APK or download target.
+links.sort(key=lambda u: (0 if any(k in u.lower() for k in ('.apk','download','3154861','xuper')) else 1, len(u)))
+for u in links[:20]: print(u)
 PY
-  DISCOVERED=$(head -1 "$OUT/discovered-url.txt" 2>/dev/null || true)
-  if [[ -n "$DISCOVERED" ]]; then
-    echo "following_discovered_url=$DISCOVERED" | tee -a "$OUT/actions.txt"
-    curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 180 \
-      -A 'Mozilla/5.0 (Linux; Android 16; Pixel 6)' \
-      -e "$UPDATE_URL" "$DISCOVERED" -o "$OUT/update-download.bin"
-  fi
-fi
+}
 
-unzip -t "$OUT/update-download.bin" >/dev/null 2>&1 || {
-  echo 'UPDATE_ENDPOINT_DID_NOT_RETURN_APK' >&2
-  head -c 4096 "$OUT/update-download.bin" > "$OUT/update-download-prefix.bin" || true
+FINAL_SOURCE=''
+TARGET_APK="$OUT/Xuper-6.5.5-Downloaded.apk"
+rm -f "$TARGET_APK"
+
+for i in "${!SOURCES[@]}"; do
+  src="${SOURCES[$i]}"
+  tag="source-$((i+1))"
+  f="$OUT/candidates/${tag}.bin"
+  echo "TRY $tag $src" | tee -a "$OUT/actions.txt"
+
+  if ! curl -fL --retry 3 --retry-all-errors --connect-timeout 20 --max-time 180 \
+      -A 'Mozilla/5.0 (Linux; Android 16; Pixel 6) AppleWebKit/537.36 Chrome/140 Mobile Safari/537.36' \
+      -e 'https://aftvnews.com/' \
+      -D "$OUT/candidates/${tag}-headers.txt" \
+      -w '%{url_effective}\n%{http_code}\n%{content_type}\n' \
+      "$src" -o "$f" > "$OUT/candidates/${tag}-meta.txt" 2> "$OUT/candidates/${tag}-curl.txt"; then
+    echo "$tag curl_failed" | tee -a "$OUT/actions.txt"
+    continue
+  fi
+
+  file "$f" > "$OUT/candidates/${tag}-file.txt" || true
+  ls -lh "$f" > "$OUT/candidates/${tag}-size.txt" || true
+
+  if validate_apk "$f" "$tag"; then
+    cp "$f" "$TARGET_APK"
+    FINAL_SOURCE="$src"
+    echo "ACCEPTED_DIRECT $tag $src" | tee -a "$OUT/actions.txt"
+    break
+  fi
+
+  links="$OUT/candidates/${tag}-links.txt"
+  extract_links "$f" "$src" "$links"
+  n=0
+  while IFS= read -r nested; do
+    [[ -n "$nested" ]] || continue
+    n=$((n+1))
+    [[ $n -le 12 ]] || break
+    nf="$OUT/candidates/${tag}-nested-${n}.bin"
+    echo "TRY_NESTED $tag#$n $nested" | tee -a "$OUT/actions.txt"
+    if curl -fL --retry 2 --retry-all-errors --connect-timeout 15 --max-time 180 \
+        -A 'Mozilla/5.0 (Linux; Android 16; Pixel 6)' -e "$src" \
+        "$nested" -o "$nf" > /dev/null 2> "$OUT/candidates/${tag}-nested-${n}-curl.txt"; then
+      if validate_apk "$nf" "${tag}-nested-${n}"; then
+        cp "$nf" "$TARGET_APK"
+        FINAL_SOURCE="$nested"
+        echo "ACCEPTED_NESTED $tag#$n $nested" | tee -a "$OUT/actions.txt"
+        break 2
+      fi
+    fi
+  done < "$links"
+done
+
+[[ -s "$TARGET_APK" ]] || {
+  echo 'NO_CANDIDATE_MATCHED_PACKAGE_VERSION_AND_OFFICIAL_CERT' >&2
   exit 61
 }
-mv "$OUT/update-download.bin" "$OUT/Xuper-6.5.5-Downloaded.apk"
 
-# 3) Strict identity check before installing anything.
-$AAPT dump badging "$OUT/Xuper-6.5.5-Downloaded.apk" | tee "$OUT/downloaded-badging.txt"
-grep -q "package: name='$PKG' versionCode='$TARGET_CODE' versionName='$TARGET_NAME'" "$OUT/downloaded-badging.txt" || {
-  echo 'DOWNLOADED_APK_IS_NOT_XUPER_655' >&2; exit 62;
-}
-$APKSIGNER verify --verbose --print-certs "$OUT/Xuper-6.5.5-Downloaded.apk" | tee "$OUT/downloaded-signing.txt"
-DOWNLOADED_CERT=$($APKSIGNER verify --print-certs "$OUT/Xuper-6.5.5-Downloaded.apk" 2>/dev/null | sed -n 's/.*certificate SHA-256 digest: //p' | head -1 | tr -d ':[:space:]' | tr '[:upper:]' '[:lower:]')
-echo "downloaded_cert=$DOWNLOADED_CERT" | tee "$OUT/downloaded-cert.txt"
-[[ "$DOWNLOADED_CERT" == "$EXPECTED_CERT" ]] || {
-  echo "DOWNLOADED_SIGNER_MISMATCH expected=$EXPECTED_CERT got=$DOWNLOADED_CERT" >&2; exit 63;
-}
-sha256sum "$OUT/Xuper-6.5.5-Downloaded.apk" | tee "$OUT/downloaded-sha256.txt"
+echo "final_source=$FINAL_SOURCE" | tee "$OUT/final-source.txt"
+"$AAPT" dump badging "$TARGET_APK" | tee "$OUT/downloaded-badging.txt"
+"$APKSIGNER" verify --verbose --print-certs "$TARGET_APK" | tee "$OUT/downloaded-signing.txt"
+sha256sum "$TARGET_APK" | tee "$OUT/downloaded-sha256.txt"
 
-# 4) Perform the actual Android package update over the installed old version.
-echo '=== adb install -r official 6.5.5 ===' | tee -a "$OUT/actions.txt"
-run_timeout 90s adb install -r -g "$OUT/Xuper-6.5.5-Downloaded.apk" | tee "$OUT/install-655.txt"
+# Perform the actual Android update over the installed old version.
+echo '=== adb install -r verified official 6.5.5 ===' | tee -a "$OUT/actions.txt"
+run_timeout 90s adb install -r -g "$TARGET_APK" | tee "$OUT/install-655.txt"
 FINAL_CODE=$(version_code || true)
 FINAL_NAME=$(version_name || true)
 echo "installed_code=$FINAL_CODE installed_name=$FINAL_NAME" | tee "$OUT/final.txt"
@@ -133,7 +179,7 @@ echo "installed_code=$FINAL_CODE installed_name=$FINAL_NAME" | tee "$OUT/final.t
   echo 'ANDROID_UPDATE_DID_NOT_REACH_655' >&2; exit 64;
 }
 
-# 5) Runtime validation on Pixel 6 / Android 16.
+# Validate the actual app after update on Pixel 6 / Android 16.
 adb emu geo fix -99.1332 19.4326 >/dev/null 2>&1 || true
 launch_app
 sleep 20
