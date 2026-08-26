@@ -1,4 +1,4 @@
-# trigger: run VOD first-media candidate
+# trigger: dynamic VOD player fallback candidate
 name: Test Xuper VOD first-media fallback on Android 16
 
 on:
@@ -61,6 +61,7 @@ jobs:
         if: always()
         run: |
           cat diagnostics-vod-first-media/result.txt 2>/dev/null || true
+          cat diagnostics-vod-first-media/vod-method-candidates.txt 2>/dev/null || true
           tail -120 diagnostics-vod-first-media/apktool-build.txt 2>/dev/null || true
           tail -120 diagnostics-vod-first-media/runtime-summary.txt 2>/dev/null || true
       - name: Upload candidate and diagnostics
