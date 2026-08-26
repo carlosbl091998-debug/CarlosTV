@@ -1,44 +1,56 @@
-name: Validate Xuper 6.5.5 on Android 16
+name: Test Magis 6.2.4 no-update gate on Android 16
 
 on:
   push:
     branches: [ main ]
-  pull_request:
-    branches: [ main ]
-  issue_comment:
-    types: [created]
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
-  validate-xuper-655:
-    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || (github.event.issue.pull_request && github.event.comment.body == '/validate-xuper-655') }}
+  test-magis-624:
     runs-on: ubuntu-latest
     timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+
       - uses: android-actions/setup-android@v3
 
-      - name: Download original signed bootstrap
+      - name: Recover exact tested official Magis 6.2.4 from historical artifact
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euxo pipefail
-          curl -fL --retry 5 --retry-all-errors -A 'Mozilla/5.0' 'https://tinyurl.com/Magis-TV-File' -o magis-current.apk
-          unzip -t magis-current.apk >/dev/null
+          ARTIFACT_ID=9590851522
+          EXPECTED_SHA=04bda60a0ebb003d1442483401978f39b601d989004d7b5e9c1f213a127d8835
+          mkdir -p /tmp/magis624
+          curl -fL --retry 4 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
+            -o /tmp/magis624.zip
+          unzip -q /tmp/magis624.zip -d /tmp/magis624
+          test -s /tmp/magis624/Xuper-Mobile-Official-Successor-Tested.apk
+          cp /tmp/magis624/Xuper-Mobile-Official-Successor-Tested.apk Magis-6.2.4.apk
+          echo "${EXPECTED_SHA}  Magis-6.2.4.apk" | sha256sum -c -
+          unzip -t Magis-6.2.4.apk >/dev/null
           AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
-          "$AAPT" dump badging magis-current.apk | tee bootstrap-badging.txt
-          grep -q "package: name='com.msandroid.mobile'" bootstrap-badging.txt
-          "$APKSIGNER" verify --verbose --print-certs magis-current.apk | tee bootstrap-signing.txt
-          sha256sum magis-current.apk | tee bootstrap-sha256.txt
+          "$AAPT" dump badging Magis-6.2.4.apk | tee recovered-badging.txt
+          grep -q "package: name='com.msandroid.mobile' versionCode='60204' versionName='6.2.4'" recovered-badging.txt
+          "$APKSIGNER" verify --verbose --print-certs Magis-6.2.4.apk | tee recovered-signing.txt
+          grep -qi 'd30dc60fd8625d49fa4e82eb442c9307743f9621004b94e229dcc01f6a9035ff' recovered-signing.txt
 
       - name: Enable KVM
         shell: bash
@@ -48,7 +60,7 @@ jobs:
           sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm
 
-      - name: Official 6.5.5 download and no-update-gate test
+      - name: Test three Magis 6.2.4 update-gate patches on Pixel 6 Android 16
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 36
@@ -60,30 +72,25 @@ jobs:
           emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
           script: bash tools/test_xuper_655_main.sh
 
-      - name: Verify final 6.5.5 metadata
-        if: success()
+      - name: Summarize result
+        if: always()
         shell: bash
         run: |
-          set -euxo pipefail
-          APK=diagnostics-update/Xuper-6.5.5-Final-Tested.apk
-          test -s "$APK"
-          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)
-          "$AAPT" dump badging "$APK" | tee diagnostics-update/final-badging.txt
-          grep -q "package: name='com.msandroid.mobile' versionCode='60505' versionName='6.5.5'" diagnostics-update/final-badging.txt
-          cp "$APK" Xuper-6.5.5-OFICIAL-ANDROID16-SIN-ACTUALIZACION.apk
-          sha256sum Xuper-6.5.5-OFICIAL-ANDROID16-SIN-ACTUALIZACION.apk | tee Xuper-6.5.5-OFICIAL-ANDROID16-SIN-ACTUALIZACION.sha256
+          echo '=== RESULT ==='
+          cat diagnostics-update/result.txt 2>/dev/null || true
+          cat diagnostics-update/baseline-result.txt 2>/dev/null || true
+          cat diagnostics-update/winner.txt 2>/dev/null || true
+          cat diagnostics-update/standalone-result.txt 2>/dev/null || true
+          find diagnostics-update -maxdepth 2 -type f -name '*TESTED*' -o -name '*result.txt' | sort || true
 
-      - name: Upload tested APK and diagnostics
+      - name: Upload Magis 6.2.4 test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: xuper-655-android16-validation
+          name: magis-624-no-update-android16
           retention-days: 7
           if-no-files-found: warn
           path: |
-            Xuper-6.5.5-OFICIAL-ANDROID16-SIN-ACTUALIZACION.apk
-            Xuper-6.5.5-OFICIAL-ANDROID16-SIN-ACTUALIZACION.sha256
-            bootstrap-badging.txt
-            bootstrap-signing.txt
-            bootstrap-sha256.txt
+            recovered-badging.txt
+            recovered-signing.txt
             diagnostics-update/**
