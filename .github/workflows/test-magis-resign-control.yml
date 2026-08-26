@@ -2,7 +2,7 @@ name: Test Magis resign-only control on Android 16
 
 on:
   push:
-    branches: [ magis-integrity-diagnosis ]
+    branches: [ main, magis-integrity-diagnosis ]
   workflow_dispatch:
 
 permissions:
@@ -15,8 +15,6 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: magis-integrity-diagnosis
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
