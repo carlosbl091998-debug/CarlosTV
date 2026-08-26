@@ -1,4 +1,4 @@
-name: Test original TV APK with mobile compatibility
+name: Test original TV APK with mobile compatibility v3
 
 on:
   pull_request:
@@ -11,7 +11,7 @@ permissions:
 jobs:
   mobile-compat-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
 
@@ -65,7 +65,7 @@ jobs:
           sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm
 
-      - name: Test unmodified APK under Android 16 phone compatibility modes
+      - name: Test untouched APK with expanded phone compatibility modes
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 36
@@ -75,13 +75,13 @@ jobs:
           disable-animations: true
           force-avd-creation: false
           emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
-          script: bash tools/test_original_mobile_compat.sh
+          script: bash tools/test_original_mobile_compat_v3.sh
 
-      - name: Upload compatibility screenshots
+      - name: Upload v3 screenshots and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: original-apk-mobile-compat-api36
+          name: original-apk-mobile-compat-v3-api36
           retention-days: 7
           if-no-files-found: warn
-          path: diagnostics/**
+          path: diagnostics-v3/**
