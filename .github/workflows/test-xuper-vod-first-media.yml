@@ -1,3 +1,4 @@
+# trigger: run VOD first-media candidate
 name: Test Xuper VOD first-media fallback on Android 16
 
 on:
