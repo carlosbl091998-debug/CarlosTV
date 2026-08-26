@@ -1,0 +1,56 @@
+name: Test Magis direct MainAty
+
+on:
+  push:
+    branches: [magis-direct-main-test]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: android-actions/setup-android@v3
+      - name: Download signed Magis family build
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 --connect-timeout 20 --max-time 180 \
+            'https://d.imagstvapk.com/imagstvapk.com_magis-celular_vlatest.apk' \
+            -o magis.apk
+          sha256sum magis.apk
+      - name: Direct MainAty probe on Android 16
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: |
+            set -e
+            mkdir -p diag
+            adb install -r magis.apk | tee diag/install.txt
+            PKG=com.msandroid.mobile
+            for p in android.permission.CAMERA android.permission.POST_NOTIFICATIONS android.permission.READ_MEDIA_IMAGES android.permission.READ_MEDIA_AUDIO android.permission.RECORD_AUDIO; do adb shell pm grant "$PKG" "$p" >/dev/null 2>&1 || true; done
+            adb logcat -c
+            adb shell am force-stop "$PKG" || true
+            adb shell am start -W -n "$PKG/com.mobile.brasiltv.activity.MainAty" | tee diag/start-main.txt || true
+            sleep 12
+            adb shell uiautomator dump /sdcard/main.xml >/dev/null 2>&1 || true
+            adb pull /sdcard/main.xml diag/main.xml >/dev/null 2>&1 || true
+            adb exec-out screencap -p > diag/main.png || true
+            adb shell pidof "$PKG" | tee diag/pid.txt || true
+            adb shell dumpsys window windows | grep -E 'mCurrentFocus|mFocusedApp' | tee diag/focus.txt || true
+            adb logcat -d > diag/logcat.txt || true
+            if [ -f diag/main.xml ]; then
+              sed 's/></>\n</g' diag/main.xml | grep -oE 'text="[^"]*"|resource-id="[^"]*"' | grep -Ei 'version|upgrade|update|discontinued|forbidden|login|password|account|email|user|home|movie|tv' | head -120 | tee diag/ui-summary.txt || true
+            fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: magis-direct-main-diagnostics
+          path: diag/
+          retention-days: 2
