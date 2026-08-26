@@ -1,0 +1,1 @@
+Trigger strict Android 16 validation for Xuper 6.5.5.
