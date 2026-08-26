@@ -1,0 +1,117 @@
+name: Test Magis mobile candidate
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-magis-mobile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Download current mobile candidate
+        shell: bash
+        run: |
+          set -euxo pipefail
+          curl -fL --retry 4 --retry-all-errors -A 'Mozilla/5.0' \
+            'https://tinyurl.com/Magis-TV-File' -o magis-current.apk
+          unzip -t magis-current.apk >/dev/null
+          sha256sum magis-current.apk | tee magis-current.sha256
+          ls -lh magis-current.apk
+
+      - name: Validate package and signing identity
+        shell: bash
+        run: |
+          set -euxo pipefail
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          "$AAPT" dump badging magis-current.apk | tee magis-badging.txt
+          grep -q "package: name='com.msandroid.mobile'" magis-badging.txt
+          "$APKSIGNER" verify --verbose --print-certs magis-current.apk | tee magis-signing.txt
+          grep -i 'Signer #1 certificate SHA-256 digest' magis-signing.txt || true
+          mkdir -p diagnostics
+          cp magis-current.sha256 magis-badging.txt magis-signing.txt diagnostics/
+
+      - name: Enable KVM
+        shell: bash
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Runtime smoke test on Android 16 phone
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          force-avd-creation: false
+          emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          script: |
+            set -euxo pipefail
+            mkdir -p diagnostics
+            adb install -r magis-current.apk | tee diagnostics/install.txt
+            adb shell am force-stop com.msandroid.mobile || true
+            LAUNCH=$(adb shell cmd package resolve-activity --brief -c android.intent.category.LAUNCHER com.msandroid.mobile | tr -d '\r' | tail -1)
+            echo "launcher=$LAUNCH" | tee diagnostics/runtime.txt
+            test -n "$LAUNCH"
+            adb shell am start -W -n "$LAUNCH" | tee diagnostics/start.txt
+
+            sleep 12
+            PID12=$(adb shell pidof com.msandroid.mobile | tr -d '\r' || true)
+            echo "pid_12s=${PID12:-DEAD}" | tee -a diagnostics/runtime.txt
+            adb shell uiautomator dump /sdcard/magis-12.xml >/dev/null 2>&1 || true
+            adb pull /sdcard/magis-12.xml diagnostics/ui-12.xml >/dev/null 2>&1 || true
+            adb exec-out screencap -p > diagnostics/screen-12.png || true
+
+            sleep 35
+            PID47=$(adb shell pidof com.msandroid.mobile | tr -d '\r' || true)
+            echo "pid_47s=${PID47:-DEAD}" | tee -a diagnostics/runtime.txt
+            adb shell uiautomator dump /sdcard/magis-47.xml >/dev/null 2>&1 || true
+            adb pull /sdcard/magis-47.xml diagnostics/ui-47.xml >/dev/null 2>&1 || true
+            adb exec-out screencap -p > diagnostics/screen-47.png || true
+            adb logcat -d -v threadtime | grep -Ei 'com\.msandroid\.mobile|FATAL EXCEPTION|AndroidRuntime|SIGKILL|EXIT_SELF' | tail -500 > diagnostics/logcat-relevant.txt || true
+
+            python3 - <<'PY'
+            from pathlib import Path
+            import re
+            out=[]
+            for fn in ('diagnostics/ui-12.xml','diagnostics/ui-47.xml'):
+                p=Path(fn)
+                t=p.read_text(errors='ignore') if p.exists() else ''
+                vals=re.findall(r'text="([^"]*)"',t)
+                out.append(fn+':')
+                out.extend('  '+v for v in vals if v.strip())
+            Path('diagnostics/ui-text.txt').write_text('\n'.join(out),encoding='utf-8')
+            PY
+            cat diagnostics/ui-text.txt || true
+
+            test -n "$PID12"
+            test -n "$PID47"
+
+      - name: Upload diagnostics and candidate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: magis-mobile-runtime-test
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            diagnostics/**
+            magis-current.apk
