@@ -63,17 +63,30 @@ jobs:
           emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
           script: bash tools/test_magis_update_chain.sh
 
-      - name: Remove third-party APK binaries from diagnostics
-        if: always()
+      - name: Preserve only the final officially installed APK
+        if: success()
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -s diagnostics-update/Magis-Mobile-Final-Tested.apk
+          mv diagnostics-update/Magis-Mobile-Final-Tested.apk Xuper-Mobile-Official-Successor-Tested.apk
+          sha256sum Xuper-Mobile-Official-Successor-Tested.apk | tee Xuper-Mobile-Official-Successor-Tested.sha256
+          find diagnostics-update -type f -name '*.apk' -delete 2>/dev/null || true
+
+      - name: Remove APK binaries on failed runs
+        if: failure()
         shell: bash
         run: |
           find diagnostics-update -type f -name '*.apk' -delete 2>/dev/null || true
 
-      - name: Upload update diagnostics
+      - name: Upload tested official successor and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: magis-official-update-diagnostics
+          name: xuper-mobile-official-successor-tested
           retention-days: 7
           if-no-files-found: warn
-          path: diagnostics-update/**
+          path: |
+            Xuper-Mobile-Official-Successor-Tested.apk
+            Xuper-Mobile-Official-Successor-Tested.sha256
+            diagnostics-update/**
