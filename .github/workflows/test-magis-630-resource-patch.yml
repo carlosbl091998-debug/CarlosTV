@@ -27,27 +27,11 @@ jobs:
         run: |
           set -euxo pipefail
           EXPECTED='d4edfc8ee9fbc008f9daa2cbb3aac733939987b7570bfc58a7065ebecfaa510a'
-          urls=(
-            'https://dl.dropboxusercontent.com/scl/fi/pptdjhun76fi8ft2a1t5e/MagisTV-v6.3.0-magistv.ar.apk?dl=1&rlkey=7tdpyou4yzplibs7vrjvn5kzt&st=4qo9k0cb'
-            'https://files.descargarmagistv.co/MagisTV-v6.3.0-descargarmagistv.co.apk'
-            'https://magisapktv.com/files/magis-celular-magisapktv.com.apk'
-          )
-          found=0
-          for url in "${urls[@]}"; do
-            rm -f candidate.apk
-            if curl -fL --connect-timeout 15 --max-time 180 --retry 2 --retry-all-errors -A 'Mozilla/5.0' "$url" -o candidate.apk; then
-              if unzip -t candidate.apk >/dev/null 2>&1; then
-                GOT=$(sha256sum candidate.apk | awk '{print $1}')
-                if [ "$GOT" = "$EXPECTED" ]; then
-                  mv candidate.apk magis-original.apk
-                  found=1
-                  break
-                fi
-              fi
-            fi
-          done
-          test "$found" -eq 1
-          echo "$EXPECTED  magis-original.apk" | sha256sum -c -
+          curl -fL --connect-timeout 20 --max-time 240 --retry 4 --retry-all-errors -A 'Mozilla/5.0' 'https://tinyurl.com/Magis-TV-File' -o magis-original.apk
+          unzip -t magis-original.apk >/dev/null
+          GOT=$(sha256sum magis-original.apk | awk '{print $1}')
+          echo "Downloaded SHA-256: $GOT"
+          test "$GOT" = "$EXPECTED"
           curl -fL --retry 3 'https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar' -o apktool.jar
 
       - name: Install Android build tools
