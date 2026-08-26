@@ -39,15 +39,19 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          rm -rf repack && mkdir repack
+          rm -rf repack stage && mkdir repack stage
           cd repack
           unzip -q ../magis-original.apk
           rm -f META-INF/*.RSA META-INF/*.DSA META-INF/*.EC META-INF/*.SF META-INF/MANIFEST.MF
+          mv resources.arsc ../stage/resources.arsc
           zip -qr ../magis-repacked-unsigned.apk .
+          cd ../stage
+          zip -0 ../magis-repacked-unsigned.apk resources.arsc
           cd ..
           ZIPALIGN="$ANDROID_HOME/build-tools/36.0.0/zipalign"
           APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
-          "$ZIPALIGN" -f 4 magis-repacked-unsigned.apk magis-resigned.apk
+          "$ZIPALIGN" -f -p 4 magis-repacked-unsigned.apk magis-resigned.apk
+          "$ZIPALIGN" -c -p 4 magis-resigned.apk
           "$APKSIGNER" sign --ks test.jks --ks-pass pass:android --key-pass pass:android --ks-key-alias test magis-resigned.apk
           "$APKSIGNER" verify --verbose --print-certs magis-resigned.apk | tee resigned-signing.txt
           python3 - <<'PY'
@@ -56,6 +60,9 @@ jobs:
           for n in ['AndroidManifest.xml','classes.dex','resources.arsc']:
               with zipfile.ZipFile(a) as za, zipfile.ZipFile(b) as zb:
                   xa=za.read(n); xb=zb.read(n)
+                  if n == 'resources.arsc':
+                      print('resources original compression', za.getinfo(n).compress_type, 'resigned compression', zb.getinfo(n).compress_type)
+                      assert zb.getinfo(n).compress_type == zipfile.ZIP_STORED
               print(n, len(xa), len(xb), hashlib.sha256(xa).hexdigest(), hashlib.sha256(xb).hexdigest(), 'IDENTICAL='+str(xa==xb))
               assert xa==xb
           PY
