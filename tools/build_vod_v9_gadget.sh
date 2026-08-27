@@ -110,7 +110,7 @@ p=sys.argv[1]; ET.register_namespace('android','http://schemas.android.com/apk/r
 t=ET.parse(p); r=t.getroot(); app=r.find('application')
 for x in list(app.findall('provider')):
     if x.get(ns+'name')=='com.xuper.vodfix.VodFixProvider': app.remove(x)
-e=ET.SubElement(app,'provider'); e.set(ns+'name','com.xuper.vodfix.VodFixProvider'); e.set(ns+'authorities','com.msandroid.mobile.vodfix'); e.set(ns+'exported','false'); e.set(ns+'initOrder','999999')
+e=ET.SubElement(app,'provider'); e.set(ns+'name','com.xuper.vodfix.VodFixProvider'); e.set(ns+'authorities','com.msandroid.mobile.vodfix'); e.set(ns+'exported','false'); e.set(ns+'initOrder','-100')
 t.write(p,encoding='utf-8',xml_declaration=True)
 PY
 for spec in 'arm64-v8a:arm64' 'armeabi-v7a:arm'; do
