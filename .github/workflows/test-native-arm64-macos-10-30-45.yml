@@ -1,0 +1,143 @@
+name: Native ARM64 Android 16 stable vs SDL 10-30-45s
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/test-native-arm64-macos-10-30-45.yml'
+
+jobs:
+  native-arm64:
+    runs-on: macos-14
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Verify native ARM64 host
+        shell: bash
+        run: |
+          set -euo pipefail
+          uname -a | tee host.txt
+          test "$(uname -m)" = 'arm64'
+          sdkmanager 'platform-tools' 'emulator' 'build-tools;35.0.0' 'system-images;android-36;google_apis;arm64-v8a' >/dev/null
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/emulator" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
+      - name: Download stable and SDL candidates
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/base /tmp/sdl
+          curl -fL --retry 4 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            'https://api.github.com/repos/carlosbl091998-debug/CarlosTV/actions/artifacts/9623417943/zip' -o /tmp/base.zip
+          unzip -q /tmp/base.zip -d /tmp/base
+          BASE=''
+          while IFS= read -r f; do
+            if [ "$(shasum -a 256 "$f" | awk '{print $1}')" = '8ba6eb4a13bdec2d8d8ab06a1502194f488ce58d9fb6de7feeb1c539ef0f7b4e' ]; then BASE="$f"; break; fi
+          done < <(find /tmp/base -type f -name '*.apk')
+          test -n "$BASE"
+          cp "$BASE" stable.apk
+          curl -fL --retry 4 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            'https://api.github.com/repos/carlosbl091998-debug/CarlosTV/actions/artifacts/9633216673/zip' -o /tmp/sdl.zip
+          unzip -q /tmp/sdl.zip -d /tmp/sdl
+          cp /tmp/sdl/candidate-sdl.apk sdl.apk
+      - name: Build ARM64-only APKs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import zipfile
+          for src,name in [('stable.apk','stable'),('sdl.apk','sdl')]:
+              with zipfile.ZipFile(src) as z, zipfile.ZipFile(f'{name}-arm64-unsigned.apk','w',allowZip64=True) as o:
+                  for it in z.infolist():
+                      p=it.filename
+                      if p.startswith('META-INF/'): continue
+                      if p.startswith('lib/') and not p.startswith('lib/arm64-v8a/'): continue
+                      d=z.read(p)
+                      n=zipfile.ZipInfo(p,it.date_time)
+                      n.compress_type=it.compress_type; n.comment=it.comment; n.extra=it.extra
+                      n.internal_attr=it.internal_attr; n.external_attr=it.external_attr; n.create_system=it.create_system
+                      o.writestr(n,d)
+          PY
+          keytool -genkeypair -keystore /tmp/test.keystore -storepass android -keypass android -alias androiddebugkey \
+            -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Android Debug,O=Android,C=US' >/dev/null 2>&1
+          for name in stable sdl; do
+            "$ANDROID_HOME/build-tools/35.0.0/zipalign" -P 16 -f 4 "$name-arm64-unsigned.apk" "$name-arm64-aligned.apk"
+            "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign --ks /tmp/test.keystore --ks-pass pass:android --key-pass pass:android \
+              --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
+              --out "$name-arm64.apk" "$name-arm64-aligned.apk"
+            "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$name-arm64.apk"
+          done
+      - name: Create ARM64 AVD
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo no | avdmanager create avd -n arm64_api36 -k 'system-images;android-36;google_apis;arm64-v8a' -d pixel_6 --force
+      - name: Start native ARM64 emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          nohup emulator -avd arm64_api36 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect -accel off > emulator.log 2>&1 &
+          echo $! > emulator.pid
+          adb wait-for-device
+          for i in $(seq 1 180); do
+            BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            if [ "$BOOT" = '1' ]; then break; fi
+            sleep 2
+          done
+          test "$(adb shell getprop sys.boot_completed | tr -d '\r')" = '1'
+          adb shell getprop ro.product.cpu.abilist | tee device-abis.txt
+          adb shell getprop ro.product.cpu.abi | tee device-abi.txt
+          grep -q '^arm64-v8a' device-abi.txt
+      - name: Native ARM64 10-30-45 comparison
+        shell: bash
+        run: |
+          set -u
+          mkdir -p diagnostics
+          run_case() {
+            local name="$1" apk="$2" dir="diagnostics/$1"
+            mkdir -p "$dir"
+            adb uninstall com.msandroid.mobile >/dev/null 2>&1 || true
+            adb install -g "$apk" > "$dir/install.txt" 2>&1 || true
+            adb shell pm path com.msandroid.mobile > "$dir/pm-path.txt" 2>&1 || true
+            if ! grep -q 'Success' "$dir/install.txt" || ! grep -q '^package:' "$dir/pm-path.txt"; then
+              echo INSTALL_FAIL > "$dir/result.txt"; return 0
+            fi
+            adb logcat -c
+            adb shell monkey -p com.msandroid.mobile -c android.intent.category.LAUNCHER 1 > "$dir/monkey.txt" 2>&1 || true
+            sleep 10
+            adb shell pidof com.msandroid.mobile | tr -d '\r[:space:]' > "$dir/pid10.txt" || true
+            sleep 20
+            adb shell pidof com.msandroid.mobile | tr -d '\r[:space:]' > "$dir/pid30.txt" || true
+            sleep 15
+            adb shell pidof com.msandroid.mobile | tr -d '\r[:space:]' > "$dir/pid45.txt" || true
+            adb logcat -d -v threadtime > "$dir/logcat.txt" 2>/dev/null || true
+            adb logcat -b crash -d -v threadtime > "$dir/crash-buffer.txt" 2>/dev/null || true
+            printf 'PID10=%s\nPID30=%s\nPID45=%s\n' "$(cat "$dir/pid10.txt")" "$(cat "$dir/pid30.txt")" "$(cat "$dir/pid45.txt")" | tee "$dir/pids.txt"
+            if [ -s "$dir/pid10.txt" ] && [ -s "$dir/pid30.txt" ] && [ -s "$dir/pid45.txt" ]; then echo PASS_45 > "$dir/result.txt"; else echo PROCESS_DIED > "$dir/result.txt"; fi
+            cat "$dir/result.txt"
+          }
+          run_case stable stable-arm64.apk
+          run_case sdl sdl-arm64.apk
+          echo "STABLE=$(cat diagnostics/stable/result.txt)"
+          echo "SDL=$(cat diagnostics/sdl/result.txt)"
+      - name: Upload native ARM64 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-arm64-macos-api36-stable-vs-sdl-10-30-45
+          path: |
+            stable-arm64.apk
+            sdl-arm64.apk
+            host.txt
+            device-abi*.txt
+            emulator.log
+            diagnostics/**
+          retention-days: 7
