@@ -6,7 +6,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/test-xuper-624-ijk630-player-arm64.yml'
-      - 'donors/ijk630/**'
+      - 'donors/**'
 
 jobs:
   build-test:
@@ -63,26 +63,44 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(find donors/ijk630 -maxdepth 1 -name 'part-*.b64' | wc -l)" -eq 6
           python3 - <<'PY'
-          import base64, glob, hashlib, pathlib
-          parts=sorted(glob.glob('donors/ijk630/part-*.b64'))
-          if len(parts) != 6:
-              raise SystemExit(f'expected 6 donor parts, got {len(parts)}')
-          decoded=[]
-          for p in parts:
-              text=''.join(pathlib.Path(p).read_text().split())
-              try:
-                  data=base64.b64decode(text, validate=True)
-              except Exception as e:
-                  raise SystemExit(f'{p}: base64 decode failed: {e}')
-              decoded.append(data)
-              print(p, 'b64=', len(text), 'bytes=', len(data), 'sha=', hashlib.sha256(data).hexdigest())
-          blob=b''.join(decoded)
+          import base64, hashlib, pathlib
+          parts = [
+              'donors/ijk630v3/part-00.b64',
+              'donors/ijk630v2/part-01.b64',
+              'donors/ijk630/part-02.b64',
+              'donors/ijk630clean/part-03.b64',
+              'donors/ijk630/part-04.b64',
+              'donors/ijk630clean/part-05.b64',
+              'donors/ijk630clean/part-06.b64',
+              'donors/ijk630clean/part-07.b64',
+              'donors/ijk630clean/part-08.b64',
+              'donors/ijk630clean/part-09.b64',
+              'donors/ijk630clean/part-10.b64',
+              'donors/ijk630clean/part-11.b64',
+              'donors/ijk630clean/part-12.b64',
+              'donors/ijk630clean/part-13.b64',
+          ]
+          chunks=[]
+          for i,p in enumerate(parts):
+              s=''.join(pathlib.Path(p).read_text().split())
+              if i < 13 and len(s) != 12000:
+                  raise SystemExit(f'{p}: unexpected length {len(s)}')
+              if i == 13 and len(s) != 11528:
+                  raise SystemExit(f'{p}: unexpected length {len(s)}')
+              if i == 12:
+                  old='Fq82xlKlbs2Ev'; new='Fq82xlKpbs2Ev'
+                  if s.count(old) != 1:
+                      raise SystemExit('part-12 correction target count != 1')
+                  s=s.replace(old,new,1)
+              chunks.append(s)
+              print(f'PART_{i:02d}=OK len={len(s)}')
+          text=''.join(chunks)
+          print('B64_TOTAL=',len(text))
+          blob=base64.b64decode(text, validate=True)
           pathlib.Path('/tmp/libijkplayer-630.so.xz').write_bytes(blob)
-          print('DONOR_PARTS=', len(parts))
-          print('PLAYER_XZ_BYTES=', len(blob))
-          print('PLAYER_XZ_SHA=', hashlib.sha256(blob).hexdigest())
+          print('XZ_BYTES=',len(blob))
+          print('XZ_SHA=',hashlib.sha256(blob).hexdigest())
           PY
           XZ_SHA=$(sha256sum /tmp/libijkplayer-630.so.xz | awk '{print $1}')
           test "$XZ_SHA" = "$PLAYER630_XZ_SHA256"
@@ -104,10 +122,6 @@ jobs:
           set -euo pipefail
           readelf -d libijkplayer-624.so | grep NEEDED | tee /tmp/needed-624.txt || true
           readelf -d libijkplayer-630.so | grep NEEDED | tee /tmp/needed-630.txt || true
-          echo '--- 6.2.4 NEEDED ---'
-          cat /tmp/needed-624.txt
-          echo '--- 6.3 NEEDED ---'
-          cat /tmp/needed-630.txt
 
       - name: Build minimal hybrid APK
         shell: bash
