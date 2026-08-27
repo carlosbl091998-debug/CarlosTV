@@ -1,4 +1,4 @@
-name: Test Xuper 6.2.4 with 6.3 arm64 IJK player
+name: Test Xuper 6.2.4 with full 6.3 arm64 IJK bundle
 
 on:
   workflow_dispatch:
@@ -6,7 +6,6 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/test-xuper-624-ijk630-player-arm64.yml'
-      - 'donors/**'
 
 jobs:
   build-test:
@@ -15,8 +14,11 @@ jobs:
     env:
       PKG: com.msandroid.mobile
       BASE_SHA256: 8ba6eb4a13bdec2d8d8ab06a1502194f488ce58d9fb6de7feeb1c539ef0f7b4e
+      DONOR630_APK_SHA256: d4edfc8ee9fbc008f9daa2cbb3aac733939987b7570bfc58a7065ebecfaa510a
       PLAYER630_SHA256: 6d47108c205f27a5a5867fac467da5b078ce71722f07611bf00ad0040390baeb
-      PLAYER630_XZ_SHA256: 7e6284bb5c46b4349d196b08aaa2766e32667bfd010aa5dfc9c8dcb41d8f6c14
+      FFMPEG630_SHA256: 5e985ef908b39d2eb4fe67d7da97824a6e55ab6bbcd0aabe3dcc90b210add1fb
+      SDL630_SHA256: 2257b00c4969e6f8aaed5751e997b83921ebf91d24b9d75bfe7dd14df2be150a
+
     steps:
       - uses: actions/checkout@v4
 
@@ -59,121 +61,103 @@ jobs:
           test "$(sha256sum stable-624.apk | awk '{print $1}')" = "$BASE_SHA256"
           echo "BASE_OK=$BASE_SHA256"
 
-      - name: Rebuild and verify 6.3 arm64 IJK player donor
+      - name: Download and verify exact 6.3.0 donor
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import base64, hashlib, pathlib
-          parts = [
-              'donors/ijk630v3/part-00.b64',
-              'donors/ijk630v2/part-01.b64',
-              'donors/ijk630/part-02.b64',
-              'donors/ijk630clean/part-03.b64',
-              'donors/ijk630/part-04.b64',
-              'donors/ijk630clean/part-05.b64',
-              'donors/ijk630clean/part-06.b64',
-              'donors/ijk630clean/part-07.b64',
-              'donors/ijk630clean/part-08.b64',
-              'donors/ijk630clean/part-09.b64',
-              'donors/ijk630clean/part-10.b64',
-              'donors/ijk630clean/part-11.b64',
-              'donors/ijk630clean/part-12.b64',
-              'donors/ijk630clean/part-13.b64',
-          ]
-          chunks=[]
-          for i,p in enumerate(parts):
-              s=''.join(pathlib.Path(p).read_text().split())
-              if i < 13 and len(s) != 12000:
-                  raise SystemExit(f'{p}: unexpected length {len(s)}')
-              if i == 13 and len(s) != 11528:
-                  raise SystemExit(f'{p}: unexpected length {len(s)}')
-              if i == 12:
-                  old='Fq82xlKlbs2Ev'; new='Fq82xlKpbs2Ev'
-                  if s.count(old) != 1:
-                      raise SystemExit('part-12 correction target count != 1')
-                  s=s.replace(old,new,1)
-              chunks.append(s)
-              print(f'PART_{i:02d}=OK len={len(s)}')
-          text=''.join(chunks)
-          print('B64_TOTAL=',len(text))
-          blob=base64.b64decode(text, validate=True)
-          pathlib.Path('/tmp/libijkplayer-630.so.xz').write_bytes(blob)
-          print('XZ_BYTES=',len(blob))
-          print('XZ_SHA=',hashlib.sha256(blob).hexdigest())
-          PY
-          XZ_SHA=$(sha256sum /tmp/libijkplayer-630.so.xz | awk '{print $1}')
-          test "$XZ_SHA" = "$PLAYER630_XZ_SHA256"
-          xz -t /tmp/libijkplayer-630.so.xz
-          xz -dc /tmp/libijkplayer-630.so.xz > libijkplayer-630.so
-          PLAYER_SHA=$(sha256sum libijkplayer-630.so | awk '{print $1}')
-          echo "PLAYER_SHA=$PLAYER_SHA"
-          test "$PLAYER_SHA" = "$PLAYER630_SHA256"
-          file libijkplayer-630.so
-          readelf -h libijkplayer-630.so | tee /tmp/player-elf-header.txt
-          grep -q 'Machine:.*AArch64' /tmp/player-elf-header.txt
-          unzip -p stable-624.apk lib/arm64-v8a/libijkplayer.so > libijkplayer-624.so
-          test "$(sha256sum libijkplayer-624.so | awk '{print $1}')" != "$PLAYER630_SHA256"
-          echo 'PLAYER_DONOR=PASS'
+          curl -fL --retry 4 --retry-all-errors \
+            -A 'Mozilla/5.0' \
+            'https://magisapktv.com/files/magis-celular-magisapktv.com.apk' \
+            -o donor-630.apk
+          DONOR_SHA=$(sha256sum donor-630.apk | awk '{print $1}')
+          echo "DONOR_APK_SHA=$DONOR_SHA"
+          test "$DONOR_SHA" = "$DONOR630_APK_SHA256"
+          unzip -t donor-630.apk >/dev/null
+          echo 'DONOR_APK=PASS'
 
-      - name: Check native dependency surface
+      - name: Extract and verify complete 6.3 ARM64 IJK bundle
         shell: bash
         run: |
           set -euo pipefail
-          readelf -d libijkplayer-624.so | grep NEEDED | tee /tmp/needed-624.txt || true
-          readelf -d libijkplayer-630.so | grep NEEDED | tee /tmp/needed-630.txt || true
+          mkdir -p donor630 base624 diagnostics-ijk630-bundle
+          for f in libijkplayer.so libijkffmpeg.so libijksdl.so; do
+            unzip -p donor-630.apk "lib/arm64-v8a/$f" > "donor630/$f"
+            unzip -p stable-624.apk "lib/arm64-v8a/$f" > "base624/$f"
+            file "donor630/$f" | tee -a diagnostics-ijk630-bundle/elf-files.txt
+            readelf -h "donor630/$f" | grep -E 'Class:|Machine:' | tee -a diagnostics-ijk630-bundle/elf-files.txt
+            readelf -d "donor630/$f" | grep NEEDED > "diagnostics-ijk630-bundle/${f%.so}-needed-630.txt" || true
+            readelf -d "base624/$f" | grep NEEDED > "diagnostics-ijk630-bundle/${f%.so}-needed-624.txt" || true
+          done
+          grep -q 'AArch64' diagnostics-ijk630-bundle/elf-files.txt
+          test "$(sha256sum donor630/libijkplayer.so | awk '{print $1}')" = "$PLAYER630_SHA256"
+          test "$(sha256sum donor630/libijkffmpeg.so | awk '{print $1}')" = "$FFMPEG630_SHA256"
+          test "$(sha256sum donor630/libijksdl.so | awk '{print $1}')" = "$SDL630_SHA256"
+          test "$(sha256sum base624/libijkplayer.so | awk '{print $1}')" != "$PLAYER630_SHA256"
+          test "$(sha256sum base624/libijkffmpeg.so | awk '{print $1}')" != "$FFMPEG630_SHA256"
+          test "$(sha256sum base624/libijksdl.so | awk '{print $1}')" != "$SDL630_SHA256"
+          sha256sum donor630/*.so base624/*.so | tee diagnostics-ijk630-bundle/native-sha256.txt
+          echo 'IJK630_ARM64_BUNDLE=PASS'
 
-      - name: Build minimal hybrid APK
+      - name: Build full ARM64 IJK bundle hybrid
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           import zipfile
-          src='stable-624.apk'; out='hybrid-unsigned.apk'; target='lib/arm64-v8a/libijkplayer.so'
-          replacement=open('libijkplayer-630.so','rb').read()
+          src='stable-624.apk'
+          out='hybrid-bundle-unsigned.apk'
+          targets={
+              'lib/arm64-v8a/libijkplayer.so': open('donor630/libijkplayer.so','rb').read(),
+              'lib/arm64-v8a/libijkffmpeg.so': open('donor630/libijkffmpeg.so','rb').read(),
+              'lib/arm64-v8a/libijksdl.so': open('donor630/libijksdl.so','rb').read(),
+          }
           with zipfile.ZipFile(src) as zin, zipfile.ZipFile(out,'w',allowZip64=True) as zout:
               for item in zin.infolist():
-                  if item.filename.startswith('META-INF/') or item.filename==target:
+                  if item.filename.startswith('META-INF/') or item.filename in targets:
                       continue
                   data=zin.read(item.filename)
                   ni=zipfile.ZipInfo(item.filename,item.date_time)
                   ni.compress_type=item.compress_type
-                  ni.comment=item.comment; ni.extra=item.extra
-                  ni.internal_attr=item.internal_attr; ni.external_attr=item.external_attr
+                  ni.comment=item.comment
+                  ni.extra=item.extra
+                  ni.internal_attr=item.internal_attr
+                  ni.external_attr=item.external_attr
                   ni.create_system=item.create_system
                   zout.writestr(ni,data)
-              ni=zipfile.ZipInfo(target)
-              ni.compress_type=zipfile.ZIP_STORED
-              ni.external_attr=0o100755 << 16
-              zout.writestr(ni,replacement)
+              for path,data in targets.items():
+                  ni=zipfile.ZipInfo(path)
+                  ni.compress_type=zipfile.ZIP_STORED
+                  ni.external_attr=0o100755 << 16
+                  zout.writestr(ni,data)
           PY
-          zipalign -P 16 -f 4 hybrid-unsigned.apk hybrid-aligned.apk
+          zipalign -P 16 -f 4 hybrid-bundle-unsigned.apk hybrid-bundle-aligned.apk
           keytool -genkeypair -v -keystore /tmp/test.keystore -storepass android -keypass android \
             -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
             -dname 'CN=Android Debug,O=Android,C=US' >/dev/null 2>&1
           apksigner sign --ks /tmp/test.keystore --ks-pass pass:android --key-pass pass:android \
-            --out Xuper-6.2.4-IJK630-Player-arm64.apk hybrid-aligned.apk
-          apksigner verify --verbose --print-certs Xuper-6.2.4-IJK630-Player-arm64.apk | tee /tmp/signature.txt
+            --out Xuper-6.2.4-IJK630-Bundle-arm64.apk hybrid-bundle-aligned.apk
+          apksigner verify --verbose --print-certs Xuper-6.2.4-IJK630-Bundle-arm64.apk | tee diagnostics-ijk630-bundle/signature.txt
 
       - name: Verify minimal-diff invariants
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p diagnostics-ijk630
           for f in classes.dex resources.arsc; do
             A=$(unzip -p stable-624.apk "$f" | sha256sum | awk '{print $1}')
-            B=$(unzip -p Xuper-6.2.4-IJK630-Player-arm64.apk "$f" | sha256sum | awk '{print $1}')
-            echo "$f base=$A hybrid=$B" | tee -a diagnostics-ijk630/invariants.txt
+            B=$(unzip -p Xuper-6.2.4-IJK630-Bundle-arm64.apk "$f" | sha256sum | awk '{print $1}')
+            echo "$f base=$A hybrid=$B" | tee -a diagnostics-ijk630-bundle/invariants.txt
             test "$A" = "$B"
           done
-          A=$(unzip -p stable-624.apk lib/arm64-v8a/libijkplayer.so | sha256sum | awk '{print $1}')
-          B=$(unzip -p Xuper-6.2.4-IJK630-Player-arm64.apk lib/arm64-v8a/libijkplayer.so | sha256sum | awk '{print $1}')
-          echo "player base=$A hybrid=$B expected=$PLAYER630_SHA256" | tee -a diagnostics-ijk630/invariants.txt
-          test "$B" = "$PLAYER630_SHA256"
-          test "$A" != "$B"
-          unzip -t Xuper-6.2.4-IJK630-Player-arm64.apk | tail -2 | tee diagnostics-ijk630/zip-test.txt
-          sha256sum stable-624.apk Xuper-6.2.4-IJK630-Player-arm64.apk | tee diagnostics-ijk630/apk-sha256.txt
-          cp /tmp/player-elf-header.txt /tmp/needed-624.txt /tmp/needed-630.txt /tmp/signature.txt diagnostics-ijk630/
+          for f in libijkplayer.so libijkffmpeg.so libijksdl.so; do
+            A=$(unzip -p stable-624.apk "lib/arm64-v8a/$f" | sha256sum | awk '{print $1}')
+            B=$(unzip -p Xuper-6.2.4-IJK630-Bundle-arm64.apk "lib/arm64-v8a/$f" | sha256sum | awk '{print $1}')
+            D=$(sha256sum "donor630/$f" | awk '{print $1}')
+            echo "$f base=$A hybrid=$B donor=$D" | tee -a diagnostics-ijk630-bundle/invariants.txt
+            test "$B" = "$D"
+            test "$A" != "$B"
+          done
+          unzip -t Xuper-6.2.4-IJK630-Bundle-arm64.apk | tail -2 | tee diagnostics-ijk630-bundle/zip-test.txt
+          sha256sum stable-624.apk donor-630.apk Xuper-6.2.4-IJK630-Bundle-arm64.apk | tee diagnostics-ijk630-bundle/apk-sha256.txt
 
       - name: Enable KVM
         run: |
@@ -181,7 +165,7 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Install and launch on Android 16
+      - name: Install and launch package on Android 16 x86_64
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 36
@@ -191,29 +175,30 @@ jobs:
           disable-animations: true
           emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
           script: |
+            adb shell getprop ro.product.cpu.abi | tee diagnostics-ijk630-bundle/emulator-abi.txt
             adb uninstall com.msandroid.mobile >/dev/null 2>&1 || true
-            adb install -g Xuper-6.2.4-IJK630-Player-arm64.apk | tee diagnostics-ijk630/install.txt
-            grep -q 'Success' diagnostics-ijk630/install.txt
+            adb install -g Xuper-6.2.4-IJK630-Bundle-arm64.apk | tee diagnostics-ijk630-bundle/install.txt
+            grep -q 'Success' diagnostics-ijk630-bundle/install.txt
             adb logcat -c
             adb shell monkey -p com.msandroid.mobile -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
             sleep 8
-            adb shell pidof com.msandroid.mobile | tr -d '\r[:space:]' | tee diagnostics-ijk630/pid8.txt
-            test -s diagnostics-ijk630/pid8.txt
+            adb shell pidof com.msandroid.mobile | tr -d '\r[:space:]' | tee diagnostics-ijk630-bundle/pid8.txt
+            test -s diagnostics-ijk630-bundle/pid8.txt
             sleep 12
-            adb shell pidof com.msandroid.mobile | tr -d '\r[:space:]' | tee diagnostics-ijk630/pid20.txt
-            test -s diagnostics-ijk630/pid20.txt
-            adb shell dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity' | tee diagnostics-ijk630/activity.txt || true
-            adb logcat -d -v threadtime | grep -Eai 'FATAL EXCEPTION|AndroidRuntime|UnsatisfiedLinkError|dlopen failed|linker|ijk|ffmpeg|player' | tail -600 > diagnostics-ijk630/runtime-errors.txt || true
-            adb exec-out screencap -p > diagnostics-ijk630/screen-20s.png || true
-            echo 'INSTALL_LAUNCH_ANDROID16=PASS' | tee diagnostics-ijk630/result.txt
+            adb shell pidof com.msandroid.mobile | tr -d '\r[:space:]' | tee diagnostics-ijk630-bundle/pid20.txt
+            test -s diagnostics-ijk630-bundle/pid20.txt
+            adb shell dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity' | tee diagnostics-ijk630-bundle/activity.txt || true
+            adb logcat -d -v threadtime | grep -Eai 'FATAL EXCEPTION|AndroidRuntime|UnsatisfiedLinkError|dlopen failed|linker|ijk|ffmpeg|player' | tail -600 > diagnostics-ijk630-bundle/runtime-errors.txt || true
+            adb exec-out screencap -p > diagnostics-ijk630-bundle/screen-20s.png || true
+            echo 'INSTALL_LAUNCH_ANDROID16_X86_64=PASS' | tee diagnostics-ijk630-bundle/result.txt
 
-      - name: Upload tested hybrid and diagnostics
+      - name: Upload tested bundle hybrid and diagnostics
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: xuper-624-ijk630-player-arm64-tested
+          name: xuper-624-ijk630-bundle-arm64-tested
           path: |
-            Xuper-6.2.4-IJK630-Player-arm64.apk
-            diagnostics-ijk630/**
+            Xuper-6.2.4-IJK630-Bundle-arm64.apk
+            diagnostics-ijk630-bundle/**
           retention-days: 7
           if-no-files-found: error
