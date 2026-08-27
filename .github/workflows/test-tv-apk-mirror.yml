@@ -1,0 +1,115 @@
+name: Diagnose protected TV APK mirror
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare-and-launch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Download same package/version mirror
+        shell: bash
+        run: |
+          set -euxo pipefail
+          PAGE='https://www.mediafire.com/file/azgvigddkzvrss4/Xuper_4.34.5_%28com.android.mgstv%29.apk/file'
+          curl -fL -A 'Mozilla/5.0' "$PAGE" -o mf.html
+          python3 - <<'PY' > direct.txt
+          import html,re
+          t=html.unescape(open('mf.html',encoding='utf-8',errors='ignore').read()).replace('\\/','/')
+          pats=[r'id=[\"\']downloadButton[\"\'][^>]*href=[\"\']([^\"\']+)',r'href=[\"\']([^\"\']+)[\"\'][^>]*id=[\"\']downloadButton[\"\']']
+          for p in pats:
+              m=re.search(p,t,re.I)
+              if m:
+                  print(m.group(1)); break
+          PY
+          test -s direct.txt
+          curl -fL -A 'Mozilla/5.0' "$(cat direct.txt)" -o base.apk
+          unzip -t base.apk >/dev/null
+          sha256sum base.apk
+
+      - name: Compute signature-independent content fingerprint
+        shell: bash
+        run: |
+          python3 - <<'PY' | tee mirror-content.txt
+          import hashlib,zipfile
+          p='base.apk'
+          with zipfile.ZipFile(p) as z:
+              names=sorted(n for n in z.namelist() if not n.upper().startswith('META-INF/'))
+              h=hashlib.sha256()
+              for n in names:
+                  d=z.read(n)
+                  h.update(n.encode()+b'\0'+hashlib.sha256(d).digest())
+              print('entries_total=',len(z.namelist()))
+              print('entries_nonmeta=',len(names))
+              print('logical_sha256=',h.hexdigest())
+              for n in ['AndroidManifest.xml','classes.dex','resources.arsc','assets/ijm_lib/arm64-v8a/libexec.so','assets/ijm_lib/arm64-v8a/libexecmain.so']:
+                  d=z.read(n)
+                  print(n,len(d),hashlib.sha256(d).hexdigest())
+          PY
+
+      - name: Install build tools
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'build-tools;36.0.0'
+          echo "BT=$ANDROID_HOME/build-tools/36.0.0" >> "$GITHUB_ENV"
+
+      - name: Create test signing key
+        shell: bash
+        run: |
+          keytool -genkeypair -v -keystore mobile-test.jks -storepass android -keypass android -alias mobiletest -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Mobile Adaptation Test,O=Local Test,C=MX'
+
+      - name: Build no-op re-signed control
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cp base.apk noop-unsigned.apk
+          zip -d noop-unsigned.apk 'META-INF/*.RSA' 'META-INF/*.DSA' 'META-INF/*.EC' 'META-INF/*.SF' 'META-INF/MANIFEST.MF' || true
+          "$BT/zipalign" -f -p 4 noop-unsigned.apk noop-aligned.apk
+          "$BT/apksigner" sign --ks mobile-test.jks --ks-pass pass:android --key-pass pass:android --out noop-resigned.apk noop-aligned.apk
+          "$BT/apksigner" verify --verbose noop-resigned.apk
+
+      - name: Build minimal sensor-orientation candidate
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 tools/patch_tv_manifest.py base.apk sensor-unsigned.apk --orientation 4
+          "$BT/zipalign" -f -p 4 sensor-unsigned.apk sensor-aligned.apk
+          "$BT/apksigner" sign --ks mobile-test.jks --ks-pass pass:android --key-pass pass:android --out sensor-mobile.apk sensor-aligned.apk
+          "$BT/apksigner" verify --verbose sensor-mobile.apk
+
+      - name: Emulator launch tests Android 16 phone profile
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: bash tools/run_apk_launch_tests.sh
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: protected-apk-mirror-diagnostics
+          if-no-files-found: ignore
+          path: |
+            mirror-content.txt
+            diagnostics/**

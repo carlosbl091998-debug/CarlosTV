@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "CarlosTV"
 include ':app'
+include ':mobilehelper'
