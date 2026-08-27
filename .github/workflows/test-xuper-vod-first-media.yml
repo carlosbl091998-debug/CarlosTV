@@ -1,9 +1,9 @@
-# trigger: dynamic VOD player fallback candidate
+# trigger: stable-checkpoint VOD player fallback candidate
 name: Test Xuper VOD first-media fallback on Android 16
 
 on:
   push:
-    branches: [ magis-frida-spawn-v2 ]
+    branches: [ main ]
     paths:
       - '.github/workflows/test-xuper-vod-first-media.yml'
       - 'tools/build_test_xuper_vod_first_media.sh'
@@ -24,23 +24,23 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v3
-      - name: Recover exact official Magis 6.2.4
+      - name: Recover validated stable checkpoint
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euxo pipefail
-          ARTIFACT_ID=9590851522
-          EXPECTED_SHA=04bda60a0ebb003d1442483401978f39b601d989004d7b5e9c1f213a127d8835
-          mkdir -p /tmp/magis624
+          ARTIFACT_ID=9623417943
+          EXPECTED_SHA=8ba6eb4a13bdec2d8d8ab06a1502194f488ce58d9fb6de7feeb1c539ef0f7b4e
+          mkdir -p /tmp/xuperstable
           curl -fL --retry 4 --retry-all-errors \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H 'Accept: application/vnd.github+json' \
             -H 'X-GitHub-Api-Version: 2022-11-28' \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
-            -o /tmp/magis624.zip
-          unzip -q /tmp/magis624.zip -d /tmp/magis624
-          cp /tmp/magis624/Xuper-Mobile-Official-Successor-Tested.apk Magis-6.2.4.apk
+            -o /tmp/xuperstable.zip
+          unzip -q /tmp/xuperstable.zip -d /tmp/xuperstable
+          cp /tmp/xuperstable/Xuper-6.2.4-VOD-VersionIdentity-60505-655.apk Magis-6.2.4.apk
           echo "${EXPECTED_SHA}  Magis-6.2.4.apk" | sha256sum -c -
       - name: Enable KVM
         run: |
@@ -68,7 +68,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: xuper-vod-first-media-candidate
+          name: xuper-vod-first-media-stable-checkpoint-candidate
           retention-days: 7
           if-no-files-found: warn
           path: diagnostics-vod-first-media/**
