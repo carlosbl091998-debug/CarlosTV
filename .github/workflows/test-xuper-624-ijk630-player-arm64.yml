@@ -64,10 +64,22 @@ jobs:
         run: |
           set -euo pipefail
           test "$(find donors/ijk630 -maxdepth 1 -name 'part-*.b64' | wc -l)" -eq 6
-          cat donors/ijk630/part-{00..05}.b64 > /tmp/player630.b64
-          base64 -d /tmp/player630.b64 > /tmp/libijkplayer-630.so.xz
+          python3 - <<'PY'
+          import base64, glob, hashlib, pathlib, sys
+          parts=sorted(glob.glob('donors/ijk630/part-*.b64'))
+          if len(parts) != 6:
+              raise SystemExit(f'expected 6 donor parts, got {len(parts)}')
+          text=''.join(pathlib.Path(p).read_text().strip() for p in parts)
+          try:
+              blob=base64.b64decode(text, validate=True)
+          except Exception as e:
+              raise SystemExit(f'base64 donor decode failed: {e}')
+          pathlib.Path('/tmp/libijkplayer-630.so.xz').write_bytes(blob)
+          print('DONOR_PARTS=', len(parts))
+          print('DONOR_B64_CHARS=', len(text))
+          print('PLAYER_XZ_SHA=', hashlib.sha256(blob).hexdigest())
+          PY
           XZ_SHA=$(sha256sum /tmp/libijkplayer-630.so.xz | awk '{print $1}')
-          echo "PLAYER_XZ_SHA=$XZ_SHA"
           test "$XZ_SHA" = "$PLAYER630_XZ_SHA256"
           xz -dc /tmp/libijkplayer-630.so.xz > libijkplayer-630.so
           PLAYER_SHA=$(sha256sum libijkplayer-630.so | awk '{print $1}')
