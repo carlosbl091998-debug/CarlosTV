@@ -14,36 +14,19 @@ jobs:
     env:
       ARTIFACT_ID: '9633216673'
       PACKAGE: com.msandroid.mobile
-      ANDROID_SDK_ROOT: /home/runner/android-sdk
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Android command-line tools without setup-android
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
-          curl -fL --retry 4 --retry-all-errors \
-            'https://dl.google.com/android/repository/commandlinetools-linux-12266719_latest.zip' \
-            -o /tmp/cmdline-tools.zip
-          rm -rf /tmp/cmdline-tools-unpack
-          mkdir -p /tmp/cmdline-tools-unpack
-          unzip -q /tmp/cmdline-tools.zip -d /tmp/cmdline-tools-unpack
-          mv /tmp/cmdline-tools-unpack/cmdline-tools "$ANDROID_SDK_ROOT/cmdline-tools/latest"
-          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-          echo "$ANDROID_SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
-          echo "$ANDROID_SDK_ROOT/emulator" >> "$GITHUB_PATH"
-
-      - name: Verify ARM64 host and install Android 16 ARM64 emulator
+      - name: Verify native ARM64 host and install ADB
         shell: bash
         run: |
           set -euo pipefail
           uname -a | tee host-uname.txt
           test "$(uname -m)" = 'aarch64'
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager 'platform-tools' 'emulator' 'system-images;android-36;google_apis;arm64-v8a'
-          emulator -version | tee emulator-version.txt
-          ls -l /dev/kvm | tee kvm.txt
+          sudo apt-get update -y
+          sudo apt-get install -y adb
+          adb version | tee adb-version.txt
+          docker version | tee docker-version.txt
 
       - name: Recover candidate APK from GitHub artifact
         shell: bash
@@ -63,38 +46,37 @@ jobs:
           cp "$APK" candidate.apk
           sha256sum candidate.apk | tee candidate-sha256.txt
 
-      - name: Create ARM64 AVD
+      - name: Start Android 16 ARM64 redroid instance
         shell: bash
         run: |
           set -euo pipefail
-          echo no | avdmanager create avd \
-            -n arm64_api36 \
-            -k 'system-images;android-36;google_apis;arm64-v8a' \
-            -d pixel_6 \
-            --force
+          mkdir -p diagnostics redroid-data
+          docker pull redroid/redroid:16.0.0_64only-latest | tee diagnostics/docker-pull.txt
+          docker run -d --rm --privileged \
+            --name redroid16 \
+            -v "$PWD/redroid-data:/data" \
+            -p 5555:5555 \
+            redroid/redroid:16.0.0_64only-latest \
+            androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2400 \
+            androidboot.redroid_dpi=420 \
+            androidboot.redroid_gpu_mode=guest \
+            | tee diagnostics/container-id.txt
 
-      - name: Start native ARM64 Android 16 emulator
-        shell: bash
-        run: |
-          set -euo pipefail
-          nohup emulator -avd arm64_api36 \
-            -accel on \
-            -no-window -noaudio -no-boot-anim \
-            -no-snapshot -gpu swiftshader_indirect \
-            -camera-back none -camera-front none \
-            > diagnostics/emulator.txt 2>&1 &
-          echo $! > diagnostics/emulator.pid
-          adb wait-for-device
-          for i in $(seq 1 180); do
-            BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
-            [ "$BOOT" = '1' ] && break
+          for i in $(seq 1 120); do
+            adb connect 127.0.0.1:5555 >/dev/null 2>&1 || true
+            STATE=$(adb -s 127.0.0.1:5555 get-state 2>/dev/null || true)
+            BOOT=$(adb -s 127.0.0.1:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+            if [ "$STATE" = 'device' ] && [ "$BOOT" = '1' ]; then break; fi
             sleep 2
           done
-          test "$(adb shell getprop sys.boot_completed | tr -d '\r')" = '1'
-          adb shell getprop ro.product.cpu.abi | tee diagnostics/device-abi.txt
+          adb -s 127.0.0.1:5555 get-state | tee diagnostics/adb-state.txt
+          test "$(adb -s 127.0.0.1:5555 shell getprop sys.boot_completed | tr -d '\r')" = '1'
+          adb -s 127.0.0.1:5555 shell getprop ro.product.cpu.abi | tee diagnostics/device-abi.txt
           grep -q '^arm64-v8a$' diagnostics/device-abi.txt
-          adb shell getprop ro.build.version.sdk | tee diagnostics/sdk.txt
+          adb -s 127.0.0.1:5555 shell getprop ro.build.version.sdk | tee diagnostics/sdk.txt
           grep -q '^36$' diagnostics/sdk.txt
+          adb -s 127.0.0.1:5555 shell getprop ro.build.version.release | tee diagnostics/release.txt
 
       - name: Install launch and enforce 10 30 45 second liveness
         id: runtime
@@ -102,8 +84,9 @@ jobs:
         continue-on-error: true
         run: |
           set +e
-          adb uninstall "$PACKAGE" >/dev/null 2>&1 || true
-          adb install -g candidate.apk > diagnostics/install.txt 2>&1
+          ADB='adb -s 127.0.0.1:5555'
+          $ADB uninstall "$PACKAGE" >/dev/null 2>&1 || true
+          $ADB install -g candidate.apk > diagnostics/install.txt 2>&1
           INSTALL_RC=$?
           cat diagnostics/install.txt
           if [ $INSTALL_RC -ne 0 ] || ! grep -q 'Success' diagnostics/install.txt; then
@@ -111,18 +94,18 @@ jobs:
             exit 1
           fi
 
-          adb logcat -c
-          adb shell monkey -p "$PACKAGE" -c android.intent.category.LAUNCHER 1 > diagnostics/launch.txt 2>&1
+          $ADB logcat -c
+          $ADB shell monkey -p "$PACKAGE" -c android.intent.category.LAUNCHER 1 > diagnostics/launch.txt 2>&1
           sleep 10
-          adb shell pidof "$PACKAGE" | tr -d '\r[:space:]' > diagnostics/pid10.txt
+          $ADB shell pidof "$PACKAGE" | tr -d '\r[:space:]' > diagnostics/pid10.txt
           if [ ! -s diagnostics/pid10.txt ]; then echo FAIL_AT_10 > diagnostics/result.txt; exit 1; fi
 
           sleep 20
-          adb shell pidof "$PACKAGE" | tr -d '\r[:space:]' > diagnostics/pid30.txt
+          $ADB shell pidof "$PACKAGE" | tr -d '\r[:space:]' > diagnostics/pid30.txt
           if [ ! -s diagnostics/pid30.txt ]; then echo FAIL_AT_30 > diagnostics/result.txt; exit 1; fi
 
           sleep 15
-          adb shell pidof "$PACKAGE" | tr -d '\r[:space:]' > diagnostics/pid45.txt
+          $ADB shell pidof "$PACKAGE" | tr -d '\r[:space:]' > diagnostics/pid45.txt
           if [ ! -s diagnostics/pid45.txt ]; then echo FAIL_AT_45 > diagnostics/result.txt; exit 1; fi
 
           echo PASS_45 > diagnostics/result.txt
@@ -133,24 +116,26 @@ jobs:
         run: |
           set +e
           mkdir -p diagnostics
-          adb logcat -d -v threadtime > diagnostics/logcat-full.txt 2>&1 || true
+          ADB='adb -s 127.0.0.1:5555'
+          $ADB logcat -d -v threadtime > diagnostics/logcat-full.txt 2>&1 || true
           grep -Eai 'FATAL EXCEPTION|AndroidRuntime|SIGSEGV|signal 11|tombstone|UnsatisfiedLinkError|dlopen failed|linker|ijk|ffmpeg|libsdl|DEBUG' diagnostics/logcat-full.txt > diagnostics/logcat-crash.txt || true
-          adb shell dumpsys activity activities > diagnostics/activities.txt 2>&1 || true
-          adb shell dumpsys package "$PACKAGE" > diagnostics/package.txt 2>&1 || true
-          adb shell pidof "$PACKAGE" > diagnostics/pid-final.txt 2>&1 || true
+          $ADB shell dumpsys activity activities > diagnostics/activities.txt 2>&1 || true
+          $ADB shell dumpsys package "$PACKAGE" > diagnostics/package.txt 2>&1 || true
+          $ADB shell pidof "$PACKAGE" > diagnostics/pid-final.txt 2>&1 || true
+          docker logs redroid16 > diagnostics/redroid-container.txt 2>&1 || true
           cat diagnostics/result.txt 2>/dev/null || true
 
       - name: Upload native ARM64 diagnostics and APK
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: native-arm64-api36-10-30-45
+          name: native-arm64-api36-redroid-10-30-45
           path: |
             candidate.apk
             candidate-sha256.txt
             host-uname.txt
-            emulator-version.txt
-            kvm.txt
+            adb-version.txt
+            docker-version.txt
             diagnostics/**
           retention-days: 7
 
