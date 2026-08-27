@@ -1,0 +1,82 @@
+name: Test Xuper official update chain to 6.5.5
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  update-to-655:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+
+      - name: Download original signed bootstrap
+        shell: bash
+        run: |
+          set -euxo pipefail
+          curl -fL --retry 5 --retry-all-errors -A 'Mozilla/5.0' 'https://tinyurl.com/Magis-TV-File' -o magis-current.apk
+          unzip -t magis-current.apk >/dev/null
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          "$AAPT" dump badging magis-current.apk | tee bootstrap-badging.txt
+          grep -q "package: name='com.msandroid.mobile'" bootstrap-badging.txt
+          "$APKSIGNER" verify --verbose --print-certs magis-current.apk | tee bootstrap-signing.txt
+          sha256sum magis-current.apk | tee bootstrap-sha256.txt
+
+      - name: Enable KVM
+        shell: bash
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Update through official app and validate 6.5.5
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          force-avd-creation: false
+          emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          script: bash tools/test_magis_update_chain.sh
+
+      - name: Verify final APK metadata
+        if: success()
+        shell: bash
+        run: |
+          set -euxo pipefail
+          APK=diagnostics-update/Xuper-6.5.5-Final-Tested.apk
+          test -s "$APK"
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)
+          "$AAPT" dump badging "$APK" | tee diagnostics-update/final-badging.txt
+          grep -q "package: name='com.msandroid.mobile' versionCode='60505' versionName='6.5.5'" diagnostics-update/final-badging.txt
+          cp "$APK" Xuper-6.5.5-OFICIAL-ANDROID16-PROBADA.apk
+          sha256sum Xuper-6.5.5-OFICIAL-ANDROID16-PROBADA.apk | tee Xuper-6.5.5-OFICIAL-ANDROID16-PROBADA.sha256
+
+      - name: Upload tested 6.5.5 and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xuper-655-official-android16-tested
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            Xuper-6.5.5-OFICIAL-ANDROID16-PROBADA.apk
+            Xuper-6.5.5-OFICIAL-ANDROID16-PROBADA.sha256
+            bootstrap-badging.txt
+            bootstrap-signing.txt
+            bootstrap-sha256.txt
+            diagnostics-update/**
