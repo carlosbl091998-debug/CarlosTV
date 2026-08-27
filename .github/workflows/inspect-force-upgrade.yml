@@ -1,0 +1,66 @@
+name: Inspect force-upgrade VOD path
+
+on:
+  push:
+    branches: [ xuper-force-upgrade-smali-patch ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Recover exact stable APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/base
+          curl -fL --retry 4 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            'https://api.github.com/repos/carlosbl091998-debug/CarlosTV/actions/artifacts/9623417943/zip' \
+            -o /tmp/base.zip
+          unzip -q /tmp/base.zip -d /tmp/base
+          BASE=''
+          while IFS= read -r f; do
+            sha=$(sha256sum "$f" | awk '{print $1}')
+            if [ "$sha" = '8ba6eb4a13bdec2d8d8ab06a1502194f488ce58d9fb6de7feeb1c539ef0f7b4e' ]; then BASE="$f"; break; fi
+          done < <(find /tmp/base -type f -name '*.apk' -print)
+          test -n "$BASE"
+          cp "$BASE" stable.apk
+      - name: Download apktool and decode
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 4 https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar -o apktool.jar
+          java -jar apktool.jar d -f stable.apk -o decoded
+      - name: Locate force-upgrade class and callers
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostics
+          grep -RIn --include='*.smali' -E 'ForceUpgradeExceptionDialog|dialog_force_upgrade_exception|version_forbidden_upgrade' decoded > diagnostics/force-upgrade-hits.txt || true
+          grep -RIn --include='*.smali' -B 20 -A 35 -E 'ForceUpgradeExceptionDialog' decoded > diagnostics/force-upgrade-context.txt || true
+          find decoded -type f -iname '*ForceUpgrade*' -print > diagnostics/force-upgrade-files.txt || true
+          echo '=== FILES ==='
+          cat diagnostics/force-upgrade-files.txt || true
+          echo '=== HITS ==='
+          head -200 diagnostics/force-upgrade-hits.txt || true
+          test -s diagnostics/force-upgrade-hits.txt
+      - name: Upload inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: force-upgrade-smali-inspection
+          retention-days: 7
+          path: diagnostics/**
