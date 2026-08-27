@@ -1,0 +1,85 @@
+name: Timeboxed stable VOD runtime trace
+on:
+  workflow_dispatch:
+  push:
+    branches: [magis-vod-runtime-dex-stable]
+    paths: ['.github/workflows/trace-stable-vod-runtime-timeboxed.yml']
+jobs:
+  trace:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PKG: com.msandroid.mobile
+      BASE_SHA256: 8ba6eb4a13bdec2d8d8ab06a1502194f488ce58d9fb6de7feeb1c539ef0f7b4e
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with: {distribution: temurin, java-version: '17'}
+      - uses: android-actions/setup-android@v3
+      - name: Recover stable and tools
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/base diagnostics
+          curl -fL -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            https://api.github.com/repos/carlosbl091998-debug/CarlosTV/actions/artifacts/9623417943/zip -o /tmp/base.zip
+          unzip -q /tmp/base.zip -d /tmp/base
+          for f in $(find /tmp/base -name '*.apk'); do
+            [ "$(sha256sum "$f"|awk '{print $1}')" = "$BASE_SHA256" ] && cp "$f" stable.apk && break
+          done
+          test -f stable.apk
+          python -m pip install --user 'frida==17.2.17' 'frida-tools==14.4.5' frida-dexdump >/dev/null
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules; sudo udevadm trigger --name-match=kvm
+      - name: Write trace script
+        run: |
+          cat > diagnostics/run.sh <<'BASH'
+          #!/usr/bin/env bash
+          set -u
+          mkdir -p diagnostics/early diagnostics/late
+          adb root || true; adb wait-for-device
+          adb uninstall "$PKG" >/dev/null 2>&1 || true
+          adb install -g stable.apk | tee diagnostics/install.txt
+          grep -q Success diagnostics/install.txt || exit 10
+          for p in android.permission.CAMERA android.permission.POST_NOTIFICATIONS android.permission.READ_MEDIA_IMAGES android.permission.READ_MEDIA_AUDIO; do adb shell pm grant "$PKG" "$p" >/dev/null 2>&1 || true; done
+          curl -fL https://github.com/frida/frida/releases/download/17.2.17/frida-server-17.2.17-android-x86_64.xz -o /tmp/fs.xz
+          xz -dc /tmp/fs.xz >/tmp/fs; chmod +x /tmp/fs; adb push /tmp/fs /data/local/tmp/fs >/dev/null
+          adb shell chmod 755 /data/local/tmp/fs; adb shell 'pkill -9 fs || true; nohup /data/local/tmp/fs >/data/local/tmp/fs.log 2>&1 &' || true
+          sleep 2; adb shell am force-stop "$PKG" || true; adb logcat -c
+          adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >diagnostics/launch.txt 2>&1 || true
+          PID=''; for i in $(seq 1 20); do PID=$(adb shell pidof "$PKG" 2>/dev/null|tr -d '\r[:space:]'||true); [ -n "$PID" ]&&break; sleep 1; done
+          echo "$PID" > diagnostics/pid-start.txt; [ -n "$PID" ] || exit 11
+          sleep 5; adb shell pidof "$PKG" > diagnostics/pid5.txt || true; test -s diagnostics/pid5.txt || exit 12
+          set +e; timeout 25s frida-dexdump -U -p "$PID" -o diagnostics/early >diagnostics/early.txt 2>&1; E=$?; set -e
+          PID2=$(adb shell pidof "$PKG" 2>/dev/null|tr -d '\r[:space:]'||true); echo "$PID2" > diagnostics/pid-after-early.txt
+          if [ -n "$PID2" ]; then set +e; timeout 25s frida-dexdump -U -p "$PID2" -o diagnostics/late >diagnostics/late.txt 2>&1; L=$?; set -e; else L=99; fi
+          find diagnostics/early diagnostics/late -type f -name '*.dex' -print -exec sha256sum {} \; > diagnostics/dex-files.txt || true
+          C=$(find diagnostics/early diagnostics/late -type f -name '*.dex' | wc -l)
+          adb shell pidof "$PKG" > diagnostics/pid-final.txt || true
+          adb logcat -d -v threadtime > diagnostics/logcat.txt || true
+          echo "EARLY=$E LATE=$L DEX_FILES=$C PID_FINAL=$(cat diagnostics/pid-final.txt 2>/dev/null||true)" | tee diagnostics/result.txt
+          test -s diagnostics/pid-final.txt
+          test "$C" -gt 0
+          BASH
+          chmod +x diagnostics/run.sh; bash -n diagnostics/run.sh
+      - name: Android 16 timeboxed runtime trace
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          script: bash diagnostics/run.sh
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stable-vod-runtime-timeboxed
+          path: diagnostics/**
+          retention-days: 7
