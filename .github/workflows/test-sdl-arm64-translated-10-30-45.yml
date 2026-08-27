@@ -103,7 +103,9 @@ jobs:
             set -e
             cat diagnostics/install.txt
             echo "$INSTALL_RC" > diagnostics/install-rc.txt
-            if [ "$INSTALL_RC" -ne 0 ] || ! grep -q 'Success' diagnostics/install.txt; then
+            adb shell pm path com.msandroid.mobile > diagnostics/pm-path.txt 2>&1 || true
+            cat diagnostics/pm-path.txt
+            if ! grep -q 'Success' diagnostics/install.txt || ! grep -q '^package:' diagnostics/pm-path.txt; then
               echo INSTALL_FAIL > diagnostics/result.txt
               adb logcat -d -v threadtime > diagnostics/logcat.txt || true
               exit 0
