@@ -1,0 +1,104 @@
+name: Discover and test exact Magis 6.3.0
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  discover-exact-630:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+
+      - name: Discover APK links and require exact user SHA256
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED='d4edfc8ee9fbc008f9daa2cbb3aac733939987b7570bfc58a7065ebecfaa510a'
+          PAGE='https://magistvhub.app/es/'
+          mkdir -p diagnostics-magis-630-discovery
+          curl -fL --retry 4 --retry-all-errors -A 'Mozilla/5.0' "$PAGE" -o page.html
+          cp page.html diagnostics-magis-630-discovery/page.html
+          python3 - <<'PY' > candidates.txt
+          import html, re
+          from urllib.parse import urljoin
+          base='https://magistvhub.app/es/'
+          text=open('page.html','r',encoding='utf-8',errors='ignore').read()
+          vals=[]
+          for m in re.finditer(r'''(?:href|src)\s*=\s*["']([^"']+)["']''', text, re.I):
+              u=html.unescape(m.group(1)).strip()
+              if '.apk' in u.lower(): vals.append(urljoin(base,u))
+          for u in dict.fromkeys(vals): print(u)
+          PY
+          cat candidates.txt | tee diagnostics-magis-630-discovery/candidates.txt
+          test -s candidates.txt || { echo 'No APK links discovered'; exit 41; }
+          FOUND=0
+          n=0
+          while IFS= read -r url; do
+            n=$((n+1))
+            echo "Trying candidate $n: $url"
+            rm -f candidate.apk
+            if curl -fL --max-time 120 --retry 2 --retry-all-errors -A 'Mozilla/5.0' "$url" -o candidate.apk; then
+              GOT=$(sha256sum candidate.apk | awk '{print $1}')
+              SIZE=$(stat -c%s candidate.apk)
+              echo "$n $GOT $SIZE $url" | tee -a diagnostics-magis-630-discovery/hashes.txt
+              if [[ "$GOT" == "$EXPECTED" ]]; then
+                mv candidate.apk magis-630.apk
+                FOUND=1
+                break
+              fi
+            fi
+          done < candidates.txt
+          [[ "$FOUND" == 1 ]] || { echo 'Exact SHA not found among page APK links'; exit 42; }
+          echo "$EXPECTED  magis-630.apk" | sha256sum -c -
+
+      - name: Verify exact APK identity
+        shell: bash
+        run: |
+          set -euxo pipefail
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          "$AAPT" dump badging magis-630.apk | tee diagnostics-magis-630-discovery/badging.txt
+          grep -q "package: name='com.msandroid.mobile'" diagnostics-magis-630-discovery/badging.txt
+          grep -q "versionName='6.3.0'" diagnostics-magis-630-discovery/badging.txt
+          "$APKSIGNER" verify --verbose --print-certs magis-630.apk | tee diagnostics-magis-630-discovery/signing.txt
+          grep -qi 'd30dc60fd8625d49fa4e82eb442c9307743f9621004b94e229dcc01f6a9035ff' diagnostics-magis-630-discovery/signing.txt
+
+      - name: Enable KVM
+        shell: bash
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run exact Magis 6.3.0 without accepting update
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          script: bash tools/test_magis_630_keep_magis.sh
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: exact-magis-630-discovery-diagnostics
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            diagnostics-magis-630-discovery/**
+            diagnostics-magis-630/**

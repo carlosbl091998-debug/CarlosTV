@@ -1,0 +1,96 @@
+name: Test exact Magis 6.3.0 without updating
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  magis-630-keep-magis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Download exact Magis 6.3.0 candidate by SHA-256
+        shell: bash
+        run: |
+          set -euxo pipefail
+          EXPECTED='d4edfc8ee9fbc008f9daa2cbb3aac733939987b7570bfc58a7065ebecfaa510a'
+          urls=(
+            'https://dl.dropboxusercontent.com/scl/fi/pptdjhun76fi8ft2a1t5e/MagisTV-v6.3.0-magistv.ar.apk?dl=1&rlkey=7tdpyou4yzplibs7vrjvn5kzt&st=4qo9k0cb'
+            'https://files.descargarmagistv.co/MagisTV-v6.3.0-descargarmagistv.co.apk'
+            'https://magisapktv.com/files/magis-celular-magisapktv.com.apk'
+          )
+          found=0
+          for url in "${urls[@]}"; do
+            rm -f candidate.apk
+            echo "Trying: $url"
+            if curl -fL --connect-timeout 15 --max-time 180 --retry 2 --retry-all-errors -A 'Mozilla/5.0' "$url" -o candidate.apk; then
+              if unzip -t candidate.apk >/dev/null 2>&1; then
+                GOT=$(sha256sum candidate.apk | awk '{print $1}')
+                SIZE=$(stat -c '%s' candidate.apk)
+                echo "candidate sha=$GOT size=$SIZE"
+                if [ "$GOT" = "$EXPECTED" ]; then
+                  mv candidate.apk magis-630.apk
+                  found=1
+                  break
+                fi
+              fi
+            fi
+          done
+          test "$found" -eq 1
+          echo "$EXPECTED  magis-630.apk" | sha256sum -c -
+
+      - name: Verify package/version/signature
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sdkmanager 'build-tools;36.0.0' >/dev/null
+          AAPT="$ANDROID_HOME/build-tools/36.0.0/aapt"
+          APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          "$AAPT" dump badging magis-630.apk | tee magis-630-badging.txt
+          grep -q "package: name='com.msandroid.mobile'" magis-630-badging.txt
+          grep -q "versionName='6.3.0'" magis-630-badging.txt
+          "$APKSIGNER" verify --verbose --print-certs magis-630.apk | tee magis-630-signing.txt
+          grep -qi 'd30dc60fd8625d49fa4e82eb442c9307743f9621004b94e229dcc01f6a9035ff' magis-630-signing.txt
+          mkdir -p diagnostics-magis-630
+          cp magis-630-badging.txt magis-630-signing.txt diagnostics-magis-630/
+
+      - name: Enable KVM
+        shell: bash
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Run Magis 6.3.0 and refuse update
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          script: bash tools/test_magis_630_keep_magis.sh
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: magis-630-keep-magis-diagnostics
+          retention-days: 7
+          if-no-files-found: warn
+          path: diagnostics-magis-630/**
