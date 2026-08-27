@@ -3,7 +3,7 @@ name: Test ARM64 Android 16 10-30-45
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, xuper-vod-media-fallback]
     paths:
       - '.github/workflows/test-arm64-android16-10-30-45.yml'
 
