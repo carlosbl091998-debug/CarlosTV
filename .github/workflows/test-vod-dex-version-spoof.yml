@@ -1,0 +1,171 @@
+name: Test VOD DEX internal version spoof
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [xuper-vod-dex-version-spoof]
+    paths:
+      - '.github/workflows/test-vod-dex-version-spoof.yml'
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PKG: com.msandroid.mobile
+      BASE_SHA256: 8ba6eb4a13bdec2d8d8ab06a1502194f488ce58d9fb6de7feeb1c539ef0f7b4e
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android build tools
+        run: |
+          set -euo pipefail
+          sdkmanager 'build-tools;35.0.0' >/dev/null
+          echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
+
+      - name: Recover stable APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/base diagnostics
+          curl -fL --retry 4 --retry-all-errors \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            'https://api.github.com/repos/carlosbl091998-debug/CarlosTV/actions/artifacts/9623417943/zip' -o /tmp/base.zip
+          unzip -q /tmp/base.zip -d /tmp/base
+          BASE=''
+          while IFS= read -r f; do
+            sha=$(sha256sum "$f" | awk '{print $1}')
+            if [ "$sha" = "$BASE_SHA256" ]; then BASE="$f"; break; fi
+          done < <(find /tmp/base -type f -name '*.apk' -print)
+          test -n "$BASE"
+          cp "$BASE" stable.apk
+
+      - name: Patch internal DEX app version only
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import zipfile, hashlib, zlib, struct
+          src='stable.apk'
+          with zipfile.ZipFile(src) as z:
+              dex=bytearray(z.read('classes.dex'))
+          pairs=[(b'6.2.4',b'6.5.5'),(b'60204',b'60505')]
+          report=[]
+          for old,new in pairs:
+              n=dex.count(old)
+              report.append(f'{old.decode()} count={n} -> {new.decode()}')
+              if n != 1:
+                  raise SystemExit(f'Expected exactly one {old!r}, got {n}')
+              dex=dex.replace(old,new)
+          # DEX signature is SHA1(bytes[32:]); checksum is Adler32(bytes[12:]).
+          dex[12:32]=hashlib.sha1(dex[32:]).digest()
+          dex[8:12]=struct.pack('<I', zlib.adler32(dex[12:]) & 0xffffffff)
+          open('classes-patched.dex','wb').write(dex)
+          open('diagnostics/version-patch.txt','w').write('\n'.join(report)+'\n')
+          # Build APK by changing only classes.dex and stripping old signatures.
+          with zipfile.ZipFile(src) as zin, zipfile.ZipFile('candidate-unsigned.apk','w',allowZip64=True) as zout:
+              for item in zin.infolist():
+                  if item.filename.startswith('META-INF/') or item.filename == 'classes.dex':
+                      continue
+                  data=zin.read(item.filename)
+                  ni=zipfile.ZipInfo(item.filename,item.date_time)
+                  ni.compress_type=item.compress_type
+                  ni.comment=item.comment; ni.extra=item.extra
+                  ni.internal_attr=item.internal_attr; ni.external_attr=item.external_attr
+                  ni.create_system=item.create_system
+                  zout.writestr(ni,data)
+              data=bytes(dex)
+              ni=zipfile.ZipInfo('classes.dex'); ni.compress_type=zipfile.ZIP_DEFLATED
+              zout.writestr(ni,data)
+          PY
+          strings classes-patched.dex | grep -E '6\.2\.4|60204|6\.5\.5|60505' | tee diagnostics/version-strings.txt
+          ! grep -q '^6\.2\.4$' diagnostics/version-strings.txt
+          ! grep -q '^60204$' diagnostics/version-strings.txt
+          grep -q '^6\.5\.5$' diagnostics/version-strings.txt
+          grep -q '^60505$' diagnostics/version-strings.txt
+
+          zipalign -P 16 -f 4 candidate-unsigned.apk candidate-aligned.apk
+          keytool -genkeypair -keystore /tmp/test.keystore -storepass android -keypass android \
+            -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname 'CN=Android Debug,O=Android,C=US' >/dev/null 2>&1
+          apksigner sign --ks /tmp/test.keystore --ks-pass pass:android --key-pass pass:android \
+            --out Xuper-6.2.4-VOD-DEX-Version655-candidate.apk candidate-aligned.apk
+          apksigner verify --verbose Xuper-6.2.4-VOD-DEX-Version655-candidate.apk | tee diagnostics/signature.txt
+          unzip -t Xuper-6.2.4-VOD-DEX-Version655-candidate.apk | tail -2 | tee diagnostics/zip-test.txt
+
+          for f in resources.arsc lib/arm64-v8a/libijkplayer.so lib/arm64-v8a/libijkffmpeg.so lib/arm64-v8a/libijksdl.so; do
+            a=$(unzip -p stable.apk "$f" | sha256sum | awk '{print $1}')
+            b=$(unzip -p Xuper-6.2.4-VOD-DEX-Version655-candidate.apk "$f" | sha256sum | awk '{print $1}')
+            echo "$f stable=$a candidate=$b" | tee -a diagnostics/invariants.txt
+            test "$a" = "$b"
+          done
+          sha256sum stable.apk Xuper-6.2.4-VOD-DEX-Version655-candidate.apk | tee diagnostics/apk-sha256.txt
+
+      - name: Write liveness test
+        run: |
+          cat > diagnostics/run-tests.sh <<'BASH'
+          #!/usr/bin/env bash
+          set -u
+          test_one() {
+            name="$1"; apk="$2"
+            mkdir -p "diagnostics/$name"
+            adb uninstall "$PKG" >/dev/null 2>&1 || true
+            adb install -g "$apk" | tee "diagnostics/$name/install.txt"
+            if ! grep -q Success "diagnostics/$name/install.txt"; then
+              echo INSTALL_FAIL > "diagnostics/$name/result.txt"; return 1
+            fi
+            adb logcat -c
+            adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >"diagnostics/$name/monkey.txt" 2>&1 || true
+            sleep 8
+            adb shell pidof "$PKG" | tr -d '\r' > "diagnostics/$name/pid8.txt" || true
+            sleep 12
+            adb shell pidof "$PKG" | tr -d '\r' > "diagnostics/$name/pid20.txt" || true
+            adb logcat -d -v threadtime > "diagnostics/$name/logcat.txt" || true
+            adb logcat -b crash -d -v threadtime > "diagnostics/$name/crash.txt" || true
+            if [ -s "diagnostics/$name/pid8.txt" ] && [ -s "diagnostics/$name/pid20.txt" ]; then
+              echo PASS > "diagnostics/$name/result.txt"; return 0
+            fi
+            echo FAIL > "diagnostics/$name/result.txt"; return 1
+          }
+          stable_rc=0; candidate_rc=0
+          test_one stable stable.apk || stable_rc=$?
+          test_one candidate Xuper-6.2.4-VOD-DEX-Version655-candidate.apk || candidate_rc=$?
+          echo "stable_rc=$stable_rc candidate_rc=$candidate_rc" | tee diagnostics/summary.txt
+          [ "$stable_rc" -eq 0 ] && [ "$candidate_rc" -eq 0 ]
+          BASH
+          chmod +x diagnostics/run-tests.sh
+          bash -n diagnostics/run-tests.sh
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Android 16 stable vs DEX-version candidate
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          script: bash diagnostics/run-tests.sh
+
+      - name: Upload candidate and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vod-dex-version655-validation
+          path: |
+            Xuper-6.2.4-VOD-DEX-Version655-candidate.apk
+            diagnostics/**
+          retention-days: 7
