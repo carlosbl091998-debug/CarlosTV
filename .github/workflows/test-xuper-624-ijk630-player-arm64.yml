@@ -61,17 +61,57 @@ jobs:
           test "$(sha256sum stable-624.apk | awk '{print $1}')" = "$BASE_SHA256"
           echo "BASE_OK=$BASE_SHA256"
 
-      - name: Download and verify exact 6.3.0 donor
+      - name: Recover and verify exact 6.3.0 donor
         shell: bash
         run: |
           set -euo pipefail
-          curl -fL --retry 4 --retry-all-errors \
-            -A 'Mozilla/5.0' \
-            'https://magisapktv.com/files/magis-celular-magisapktv.com.apk' \
-            -o donor-630.apk
+          ORIGINAL='https://magisapktv.com/files/magis-celular-magisapktv.com.apk'
+          rm -f donor-630.apk /tmp/donor-candidate.apk /tmp/cdx.txt
+
+          # First try the historical source directly. It is accepted only by exact SHA.
+          if curl -fL --connect-timeout 8 --max-time 90 --retry 1 --retry-all-errors \
+              -A 'Mozilla/5.0' "$ORIGINAL" -o /tmp/donor-candidate.apk 2>/tmp/direct.err; then
+            SHA=$(sha256sum /tmp/donor-candidate.apk | awk '{print $1}')
+            echo "DIRECT_SHA=$SHA"
+            if [ "$SHA" = "$DONOR630_APK_SHA256" ]; then
+              mv /tmp/donor-candidate.apk donor-630.apk
+            fi
+          else
+            echo 'DIRECT_SOURCE=UNAVAILABLE'
+            cat /tmp/direct.err || true
+          fi
+
+          # If the origin is gone/unresolvable, query Wayback CDX and inspect snapshots.
+          if [ ! -f donor-630.apk ]; then
+            CDX='https://web.archive.org/cdx/search/cdx?url=magisapktv.com%2Ffiles%2Fmagis-celular-magisapktv.com.apk&output=txt&fl=timestamp%2Coriginal&filter=statuscode%3A200&collapse=digest&from=2025&to=2026'
+            curl -fL --connect-timeout 15 --max-time 60 --retry 3 --retry-all-errors \
+              -A 'Mozilla/5.0' "$CDX" -o /tmp/cdx.txt
+            echo 'CDX_RESULTS:'
+            cat /tmp/cdx.txt
+            tac /tmp/cdx.txt | while read -r TS URL; do
+              [ -n "${TS:-}" ] || continue
+              SNAP="https://web.archive.org/web/${TS}id_/${URL}"
+              echo "TRY_SNAPSHOT=$TS"
+              rm -f /tmp/donor-candidate.apk
+              if curl -fL --connect-timeout 15 --max-time 180 --retry 2 --retry-all-errors \
+                  -A 'Mozilla/5.0' "$SNAP" -o /tmp/donor-candidate.apk; then
+                SHA=$(sha256sum /tmp/donor-candidate.apk | awk '{print $1}')
+                BYTES=$(stat -c '%s' /tmp/donor-candidate.apk)
+                echo "SNAPSHOT=$TS bytes=$BYTES sha=$SHA"
+                if [ "$SHA" = "$DONOR630_APK_SHA256" ]; then
+                  cp /tmp/donor-candidate.apk donor-630.apk
+                  echo "$TS" > /tmp/matched-snapshot.txt
+                  break
+                fi
+              fi
+            done
+          fi
+
+          test -f donor-630.apk
           DONOR_SHA=$(sha256sum donor-630.apk | awk '{print $1}')
           echo "DONOR_APK_SHA=$DONOR_SHA"
           test "$DONOR_SHA" = "$DONOR630_APK_SHA256"
+          test "$(stat -c '%s' donor-630.apk)" = '35766216'
           unzip -t donor-630.apk >/dev/null
           echo 'DONOR_APK=PASS'
 
