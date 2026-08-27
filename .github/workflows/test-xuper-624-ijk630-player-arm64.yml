@@ -191,7 +191,7 @@ jobs:
           disable-animations: true
           emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
           script: |
-            set -euo pipefail
+            set -eu
             APK='Xuper-6.2.4-IJK630-Player-arm64.apk'
             adb uninstall "$PKG" >/dev/null 2>&1 || true
             adb install -g "$APK" | tee diagnostics-ijk630/install.txt
