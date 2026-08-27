@@ -9,8 +9,8 @@ on:
 
 jobs:
   arm64-test:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
     env:
       ARTIFACT_ID: '9633216673'
       PACKAGE: com.msandroid.mobile
@@ -19,12 +19,16 @@ jobs:
 
       - uses: android-actions/setup-android@v3
 
-      - name: Install emulator and ARM64 Android 16 image
+      - name: Verify ARM64 host and install Android 16 ARM64 emulator
         shell: bash
         run: |
           set -euo pipefail
+          uname -a | tee host-uname.txt
+          test "$(uname -m)" = 'aarch64'
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager 'platform-tools' 'emulator' 'system-images;android-36;google_apis;arm64-v8a'
+          emulator -version | tee emulator-version.txt
+          ls -l /dev/kvm | tee kvm.txt
 
       - name: Recover candidate APK from GitHub artifact
         shell: bash
@@ -54,19 +58,19 @@ jobs:
             -d pixel_6 \
             --force
 
-      - name: Start ARM64 emulator through software translation
+      - name: Start native ARM64 Android 16 emulator
         shell: bash
         run: |
           set -euo pipefail
           nohup emulator -avd arm64_api36 \
-            -accel off \
+            -accel on \
             -no-window -noaudio -no-boot-anim \
             -no-snapshot -gpu swiftshader_indirect \
             -camera-back none -camera-front none \
             > diagnostics/emulator.txt 2>&1 &
           echo $! > diagnostics/emulator.pid
           adb wait-for-device
-          for i in $(seq 1 300); do
+          for i in $(seq 1 180); do
             BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
             [ "$BOOT" = '1' ] && break
             sleep 2
@@ -108,7 +112,7 @@ jobs:
 
           echo PASS_45 > diagnostics/result.txt
 
-      - name: Capture crash diagnostics
+      - name: Capture diagnostics
         if: always()
         shell: bash
         run: |
@@ -118,19 +122,20 @@ jobs:
           grep -Eai 'FATAL EXCEPTION|AndroidRuntime|SIGSEGV|signal 11|tombstone|UnsatisfiedLinkError|dlopen failed|linker|ijk|ffmpeg|libsdl|DEBUG' diagnostics/logcat-full.txt > diagnostics/logcat-crash.txt || true
           adb shell dumpsys activity activities > diagnostics/activities.txt 2>&1 || true
           adb shell dumpsys package "$PACKAGE" > diagnostics/package.txt 2>&1 || true
-          adb shell 'ls -l /data/tombstones 2>/dev/null' > diagnostics/tombstones-list.txt 2>&1 || true
-          adb shell 'cat /data/tombstones/tombstone_* 2>/dev/null' > diagnostics/tombstones.txt 2>&1 || true
           adb shell pidof "$PACKAGE" > diagnostics/pid-final.txt 2>&1 || true
           cat diagnostics/result.txt 2>/dev/null || true
 
-      - name: Upload ARM64 diagnostics and APK
+      - name: Upload native ARM64 diagnostics and APK
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: arm64-api36-10-30-45-diagnostics
+          name: native-arm64-api36-10-30-45
           path: |
             candidate.apk
             candidate-sha256.txt
+            host-uname.txt
+            emulator-version.txt
+            kvm.txt
             diagnostics/**
           retention-days: 7
 
