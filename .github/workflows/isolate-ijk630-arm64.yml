@@ -1,0 +1,127 @@
+name: Isolate 6.3 IJK arm64 variants
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/isolate-ijk630-arm64.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [control, player, sdl]
+    env:
+      BASE_SHA256: 8ba6eb4a13bdec2d8d8ab06a1502194f488ce58d9fb6de7feeb1c539ef0f7b4e
+      PLAYER_SHA256: 6d47108c205f27a5a5867fac467da5b078ce71722f07611bf00ad0040390baeb
+      PLAYER_XZ_SHA256: 7e6284bb5c46b4349d196b08aaa2766e32667bfd010aa5dfc9c8dcb41d8f6c14
+      SDL_SHA256: 2257b00c4969e6f8aaed5751e997b83921ebf91d24b9d75bfe7dd14df2be150a
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager 'build-tools;35.0.0' >/dev/null
+          echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
+      - name: Recover base and SDL
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/base /tmp/sdl
+          curl -fL -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' 'https://api.github.com/repos/carlosbl091998-debug/CarlosTV/actions/artifacts/9623417943/zip' -o /tmp/base.zip
+          unzip -q /tmp/base.zip -d /tmp/base
+          BASE=''; while IFS= read -r f; do [ "$(sha256sum "$f"|awk '{print $1}')" = "$BASE_SHA256" ] && BASE="$f" && break; done < <(find /tmp/base -name '*.apk' -type f)
+          test -n "$BASE"; cp "$BASE" stable.apk
+          curl -fL -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' 'https://api.github.com/repos/carlosbl091998-debug/CarlosTV/actions/artifacts/9632074487/zip' -o /tmp/sdl.zip
+          unzip -q /tmp/sdl.zip -d /tmp/sdl
+          SDL=$(find /tmp/sdl -name libijksdl.so -type f | head -1); test -n "$SDL"; cp "$SDL" sdl630.so
+          test "$(sha256sum sdl630.so|awk '{print $1}')" = "$SDL_SHA256"
+      - name: Recover exact player
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64,hashlib,pathlib
+          parts=['donors/ijk630v3/part-00.b64','donors/ijk630v2/part-01.b64','donors/ijk630/part-02.b64','donors/ijk630clean/part-03.b64','donors/ijk630/part-04.b64']+[f'donors/ijk630clean/part-{i:02d}.b64' for i in range(5,14)]
+          xs=[]
+          for i,p in enumerate(parts):
+              s=''.join(pathlib.Path(p).read_text().split())
+              if i==12: s=s.replace('Fq82xlKlbs2Ev','Fq82xlKpbs2Ev',1)
+              xs.append(s)
+          b=base64.b64decode(''.join(xs),validate=True)
+          pathlib.Path('/tmp/player.xz').write_bytes(b)
+          PY
+          test "$(sha256sum /tmp/player.xz|awk '{print $1}')" = "$PLAYER_XZ_SHA256"
+          xz -dc /tmp/player.xz > player630.so
+          test "$(sha256sum player630.so|awk '{print $1}')" = "$PLAYER_SHA256"
+      - name: Build ${{ matrix.variant }}
+        shell: bash
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os,zipfile
+          v=os.environ['VARIANT']; repl={}
+          if v=='player': repl['lib/arm64-v8a/libijkplayer.so']=open('player630.so','rb').read()
+          if v=='sdl': repl['lib/arm64-v8a/libijksdl.so']=open('sdl630.so','rb').read()
+          with zipfile.ZipFile('stable.apk') as z, zipfile.ZipFile('unsigned.apk','w',allowZip64=True) as o:
+              for it in z.infolist():
+                  if it.filename.startswith('META-INF/') or it.filename in repl: continue
+                  d=z.read(it.filename); n=zipfile.ZipInfo(it.filename,it.date_time); n.compress_type=it.compress_type; n.comment=it.comment; n.extra=it.extra; n.internal_attr=it.internal_attr; n.external_attr=it.external_attr; n.create_system=it.create_system; o.writestr(n,d)
+              for p,d in repl.items():
+                  n=zipfile.ZipInfo(p); n.compress_type=zipfile.ZIP_STORED; n.external_attr=0o100755<<16; o.writestr(n,d)
+          PY
+          zipalign -P 16 -f 4 unsigned.apk aligned.apk
+          keytool -genkeypair -keystore /tmp/test.keystore -storepass android -keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Android Debug,O=Android,C=US' >/dev/null 2>&1
+          apksigner sign --ks /tmp/test.keystore --ks-pass pass:android --key-pass pass:android --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --out candidate-${VARIANT}.apk aligned.apk
+          apksigner verify --verbose candidate-${VARIANT}.apk
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules; sudo udevadm trigger --name-match=kvm
+      - name: Android 16 test
+        uses: reactivecircus/android-emulator-runner@v2
+        continue-on-error: true
+        env:
+          VARIANT: ${{ matrix.variant }}
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          script: |
+            mkdir -p diagnostics
+            adb uninstall com.msandroid.mobile >/dev/null 2>&1 || true
+            adb install -g candidate-${VARIANT}.apk > diagnostics/install.txt 2>&1 || true
+            adb logcat -c
+            adb shell monkey -p com.msandroid.mobile -c android.intent.category.LAUNCHER 1 > diagnostics/monkey.txt 2>&1 || true
+            sleep 8
+            adb shell pidof com.msandroid.mobile > diagnostics/pid8.txt 2>&1 || true
+            sleep 12
+            adb shell pidof com.msandroid.mobile > diagnostics/pid20.txt 2>&1 || true
+            adb logcat -d -v threadtime > diagnostics/logcat.txt 2>&1 || true
+            if grep -q Success diagnostics/install.txt && test -s diagnostics/pid8.txt && test -s diagnostics/pid20.txt; then echo PASS > diagnostics/result.txt; else echo FAIL > diagnostics/result.txt; fi
+      - name: Upload ${{ matrix.variant }}
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: isolate-ijk630-${{ matrix.variant }}
+          path: |
+            candidate-${{ matrix.variant }}.apk
+            diagnostics/**
+          retention-days: 7
