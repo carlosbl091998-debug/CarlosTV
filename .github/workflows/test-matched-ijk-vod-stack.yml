@@ -108,6 +108,47 @@ jobs:
           done
           sha256sum stable.apk Magis-stable-matched-IJK-vod-candidate.apk | tee diagnostics/apk-sha256.txt
 
+      - name: Write liveness test script
+        run: |
+          cat > diagnostics/run-tests.sh <<'BASH'
+          #!/usr/bin/env bash
+          set -u
+          test_one() {
+            name="$1"
+            apk="$2"
+            mkdir -p "diagnostics/$name"
+            adb uninstall "$PKG" >/dev/null 2>&1 || true
+            adb install -g "$apk" | tee "diagnostics/$name/install.txt"
+            if ! grep -q Success "diagnostics/$name/install.txt"; then
+              echo INSTALL_FAIL > "diagnostics/$name/result.txt"
+              return 1
+            fi
+            adb logcat -c
+            adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >"diagnostics/$name/monkey.txt" 2>&1 || true
+            sleep 8
+            adb shell pidof "$PKG" | tr -d '\r' > "diagnostics/$name/pid8.txt" || true
+            sleep 12
+            adb shell pidof "$PKG" | tr -d '\r' > "diagnostics/$name/pid20.txt" || true
+            adb logcat -d -v threadtime > "diagnostics/$name/logcat.txt" || true
+            adb logcat -b crash -d -v threadtime > "diagnostics/$name/crash.txt" || true
+            if [ -s "diagnostics/$name/pid8.txt" ] && [ -s "diagnostics/$name/pid20.txt" ]; then
+              echo PASS > "diagnostics/$name/result.txt"
+              return 0
+            fi
+            echo FAIL > "diagnostics/$name/result.txt"
+            return 1
+          }
+
+          stable_rc=0
+          matched_rc=0
+          test_one stable stable.apk || stable_rc=$?
+          test_one matched Magis-stable-matched-IJK-vod-candidate.apk || matched_rc=$?
+          echo "stable_rc=$stable_rc matched_rc=$matched_rc" | tee diagnostics/summary.txt
+          [ "$stable_rc" -eq 0 ] && [ "$matched_rc" -eq 0 ]
+          BASH
+          chmod +x diagnostics/run-tests.sh
+          bash -n diagnostics/run-tests.sh
+
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -123,36 +164,7 @@ jobs:
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
-          script: |
-            set -u
-            test_one() {
-              name="$1"; apk="$2"
-              mkdir -p "diagnostics/$name"
-              adb uninstall "$PKG" >/dev/null 2>&1 || true
-              adb install -g "$apk" | tee "diagnostics/$name/install.txt"
-              grep -q Success "diagnostics/$name/install.txt" || { echo INSTALL_FAIL > "diagnostics/$name/result.txt"; return 1; }
-              adb logcat -c
-              adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >"diagnostics/$name/monkey.txt" 2>&1 || true
-              sleep 8
-              adb shell pidof "$PKG" | tr -d '\r' > "diagnostics/$name/pid8.txt" || true
-              sleep 12
-              adb shell pidof "$PKG" | tr -d '\r' > "diagnostics/$name/pid20.txt" || true
-              adb logcat -d -v threadtime > "diagnostics/$name/logcat.txt" || true
-              adb logcat -b crash -d -v threadtime > "diagnostics/$name/crash.txt" || true
-              if [ -s "diagnostics/$name/pid8.txt" ] && [ -s "diagnostics/$name/pid20.txt" ]; then
-                echo PASS > "diagnostics/$name/result.txt"
-                return 0
-              fi
-              echo FAIL > "diagnostics/$name/result.txt"
-              return 1
-            }
-            test_one stable stable.apk
-            stable_rc=$?
-            test_one matched Magis-stable-matched-IJK-vod-candidate.apk
-            matched_rc=$?
-            echo "stable_rc=$stable_rc matched_rc=$matched_rc" | tee diagnostics/summary.txt
-            test "$stable_rc" -eq 0
-            test "$matched_rc" -eq 0
+          script: bash diagnostics/run-tests.sh
 
       - name: Upload candidate and diagnostics
         if: always()
