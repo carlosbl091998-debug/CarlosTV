@@ -191,25 +191,21 @@ jobs:
           disable-animations: true
           emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
           script: |
-            set -eu
-            APK='Xuper-6.2.4-IJK630-Player-arm64.apk'
-            adb uninstall "$PKG" >/dev/null 2>&1 || true
-            adb install -g "$APK" | tee diagnostics-ijk630/install.txt
+            adb uninstall com.msandroid.mobile >/dev/null 2>&1 || true
+            adb install -g Xuper-6.2.4-IJK630-Player-arm64.apk | tee diagnostics-ijk630/install.txt
             grep -q 'Success' diagnostics-ijk630/install.txt
             adb logcat -c
-            adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+            adb shell monkey -p com.msandroid.mobile -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
             sleep 8
-            PID8=$(adb shell pidof "$PKG" | tr -d '\r[:space:]' || true)
-            echo "PID_8S=$PID8" | tee diagnostics-ijk630/runtime.txt
-            test -n "$PID8"
+            adb shell pidof com.msandroid.mobile | tr -d '\r[:space:]' | tee diagnostics-ijk630/pid8.txt
+            test -s diagnostics-ijk630/pid8.txt
             sleep 12
-            PID20=$(adb shell pidof "$PKG" | tr -d '\r[:space:]' || true)
-            echo "PID_20S=$PID20" | tee -a diagnostics-ijk630/runtime.txt
-            test -n "$PID20"
+            adb shell pidof com.msandroid.mobile | tr -d '\r[:space:]' | tee diagnostics-ijk630/pid20.txt
+            test -s diagnostics-ijk630/pid20.txt
             adb shell dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity' | tee diagnostics-ijk630/activity.txt || true
             adb logcat -d -v threadtime | grep -Eai 'FATAL EXCEPTION|AndroidRuntime|UnsatisfiedLinkError|dlopen failed|linker|ijk|ffmpeg|player' | tail -600 > diagnostics-ijk630/runtime-errors.txt || true
             adb exec-out screencap -p > diagnostics-ijk630/screen-20s.png || true
-            echo 'INSTALL_LAUNCH_ANDROID16=PASS' | tee -a diagnostics-ijk630/runtime.txt
+            echo 'INSTALL_LAUNCH_ANDROID16=PASS' | tee diagnostics-ijk630/result.txt
 
       - name: Upload tested hybrid and diagnostics
         if: success()
