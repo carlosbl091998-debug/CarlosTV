@@ -11,10 +11,8 @@ on:
 
 jobs:
   build-and-test:
-    # SecNeo crashes under x86_64/Berberis before our hook is loaded. Test on
-    # a native ARM64 host/emulator so the result matches a real ARM64 phone.
     runs-on: macos-14
-    timeout-minutes: 45
+    timeout-minutes: 30
     permissions:
       contents: read
       actions: read
@@ -68,18 +66,43 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          nohup emulator -avd arm64_api36 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect -accel off > emulator.log 2>&1 &
-          echo $! > emulator.pid
-          adb wait-for-device
-          for i in $(seq 1 180); do
-            BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
-            if [ "$BOOT" = '1' ]; then break; fi
-            sleep 2
+          adb kill-server || true
+          pkill -f 'emulator.*arm64_api36' || true
+          nohup emulator -avd arm64_api36 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect -accel on > emulator.log 2>&1 &
+          EMU_PID=$!
+          echo "$EMU_PID" > emulator.pid
+
+          # Native arm64 guest on the arm64 macOS runner must use hardware acceleration.
+          # Fail fast instead of hanging indefinitely if boot never completes.
+          deadline=$((SECONDS + 360))
+          while (( SECONDS < deadline )); do
+            if ! kill -0 "$EMU_PID" 2>/dev/null; then
+              echo 'EMULATOR_PROCESS_EXITED_BEFORE_BOOT' >&2
+              tail -200 emulator.log || true
+              exit 81
+            fi
+            if adb devices | grep -q '^emulator-'; then
+              BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+              if [ "$BOOT" = '1' ]; then
+                break
+              fi
+            fi
+            sleep 5
           done
-          test "$(adb shell getprop sys.boot_completed | tr -d '\r')" = '1'
+
+          BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+          if [ "$BOOT" != '1' ]; then
+            echo 'EMULATOR_BOOT_TIMEOUT_360S' >&2
+            adb devices -l || true
+            tail -300 emulator.log || true
+            exit 82
+          fi
+
+          adb shell input keyevent 82 || true
           adb shell getprop ro.product.cpu.abi | tee device-abi.txt
           adb shell getprop ro.product.cpu.abilist | tee device-abis.txt
           grep -q '^arm64-v8a' device-abi.txt
+          echo 'ANDROID16_NATIVE_ARM64_BOOT_OK'
 
       - name: Require same app process alive continuously for 60 seconds
         shell: bash
