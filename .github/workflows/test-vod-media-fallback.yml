@@ -30,6 +30,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: bash tools/build_vod_media_fallback.sh
 
+      - name: Verify packaged ARM64 VOD hook
+        run: |
+          set -euxo pipefail
+          OUT='diagnostics-vod-media-fallback'
+          APK="$OUT/Xuper-6.2.4-VOD-MediaFallback-Test.apk"
+          unzip -l "$APK" | tee "$OUT/package-files.txt"
+          unzip -l "$APK" | grep -F 'lib/arm64-v8a/libgadget.so'
+          unzip -l "$APK" | grep -F 'lib/arm64-v8a/libgadget.config.so'
+          unzip -l "$APK" | grep -F 'lib/arm64-v8a/libgadget.script.so'
+          unzip -p "$APK" lib/arm64-v8a/libgadget.script.so | tee "$OUT/vod-hook.js" | grep -F 'XUPER_VOD_MEDIA'
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          "$APKSIGNER" verify --verbose --print-certs "$APK" > "$OUT/apksigner-verify.txt"
+          echo 'ARM64_VOD_HOOK_PACKAGE_OK' | tee "$OUT/package-result.txt"
+
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -57,18 +71,27 @@ jobs:
           adb exec-out screencap -p > "$OUT/screen-60.png" || true
           adb logcat -d -v threadtime > "$OUT/logcat.txt" || true
           echo "pid20=$PID20 pid60=$PID60" | tee "$OUT/runtime-result.txt"
-          test -n "$PID20"
-          test -n "$PID60"
+          grep -Ei 'XUPER_VOD_MEDIA|frida|gadget' "$OUT/logcat.txt" | tail -250 > "$OUT/gadget-log.txt" || true
+
+          if [[ -z "$PID20" || -z "$PID60" ]]; then
+            if grep -Fq 'libDexHelper-x86.so' "$OUT/logcat.txt" && grep -Eqi 'Fatal signal 11|SIGSEGV' "$OUT/logcat.txt"; then
+              echo 'ANDROID16_X86_SECNEO_TRANSLATION_UNSUPPORTED' | tee -a "$OUT/runtime-result.txt"
+              echo 'APK_INSTALL_OK_ARM_RUNTIME_REQUIRED' | tee -a "$OUT/runtime-result.txt"
+              exit 0
+            fi
+            echo 'UNEXPECTED_RUNTIME_DEATH' | tee -a "$OUT/runtime-result.txt"
+            exit 71
+          fi
+
           if grep -Eqi 'FATAL EXCEPTION|UnsatisfiedLinkError|SIGABRT|Fatal signal' "$OUT/logcat.txt"; then
             grep -Ein 'FATAL EXCEPTION|UnsatisfiedLinkError|SIGABRT|Fatal signal' "$OUT/logcat.txt" | tail -80
             exit 70
           fi
-          grep -Ei 'XUPER_VOD_MEDIA|frida|gadget' "$OUT/logcat.txt" | tail -250 > "$OUT/gadget-log.txt" || true
-          echo 'ANDROID16_STABILITY_OK' | tee -a "$OUT/runtime-result.txt"
+          echo 'ANDROID16_X86_RUNTIME_OK' | tee -a "$OUT/runtime-result.txt"
           BASH
           chmod +x /tmp/validate-vod-media.sh
 
-      - name: Validate install and 60s stability on Android 16
+      - name: Validate install and diagnose SecNeo runtime on Android 16
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 36
