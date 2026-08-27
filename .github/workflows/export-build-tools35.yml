@@ -20,11 +20,13 @@ jobs:
           BT="$ANDROID_HOME/build-tools/35.0.0"
           test -x "$BT/zipalign"
           test -f "$BT/lib/apksigner.jar"
-          mkdir -p out
+          test -f "$BT/lib64/libc++.so"
+          mkdir -p out/lib64
           cp "$BT/zipalign" out/
           cp "$BT/apksigner" out/
           cp "$BT/lib/apksigner.jar" out/
-          sha256sum out/* | tee out/SHA256SUMS.txt
+          cp "$BT/lib64/libc++.so" out/lib64/
+          (cd out && find . -type f -print0 | sort -z | xargs -0 sha256sum) | tee out/SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
           name: android-build-tools35-signing
