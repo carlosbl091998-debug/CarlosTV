@@ -1,0 +1,49 @@
+name: Probe current public APK for exact IJK 6.3 libs
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/probe-current-ijk-donor.yml'
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PLAYER630_SHA256: 6d47108c205f27a5a5867fac467da5b078ce71722f07611bf00ad0040390baeb
+      FFMPEG630_SHA256: 5e985ef908b39d2eb4fe67d7da97824a6e55ab6bbcd0aabe3dcc90b210add1fb
+      SDL630_SHA256: 2257b00c4969e6f8aaed5751e997b83921ebf91d24b9d75bfe7dd14df2be150a
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download current candidate and inspect IJK ARM64
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL='https://magistv.apkfile.space/cc40'
+          curl -fL --connect-timeout 15 --max-time 180 --retry 3 --retry-all-errors \
+            -A 'Mozilla/5.0' "$URL" -o candidate.apk
+          echo "APK_BYTES=$(stat -c '%s' candidate.apk)"
+          echo "APK_SHA256=$(sha256sum candidate.apk | awk '{print $1}')"
+          unzip -t candidate.apk >/dev/null
+          mkdir -p donor-probe
+          for f in libijkplayer.so libijkffmpeg.so libijksdl.so; do
+            unzip -p candidate.apk "lib/arm64-v8a/$f" > "donor-probe/$f"
+            test -s "donor-probe/$f"
+            echo "$f bytes=$(stat -c '%s' donor-probe/$f) sha=$(sha256sum donor-probe/$f | awk '{print $1}')"
+          done | tee donor-probe/hashes.txt
+          P=$(sha256sum donor-probe/libijkplayer.so | awk '{print $1}')
+          F=$(sha256sum donor-probe/libijkffmpeg.so | awk '{print $1}')
+          S=$(sha256sum donor-probe/libijksdl.so | awk '{print $1}')
+          if [ "$P" = "$PLAYER630_SHA256" ] && [ "$F" = "$FFMPEG630_SHA256" ] && [ "$S" = "$SDL630_SHA256" ]; then
+            echo 'EXACT_630_BUNDLE=YES' | tee donor-probe/result.txt
+          else
+            echo 'EXACT_630_BUNDLE=NO' | tee donor-probe/result.txt
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: current-ijk-donor-probe
+          path: donor-probe/**
+          retention-days: 3
