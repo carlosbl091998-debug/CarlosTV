@@ -6,6 +6,7 @@ on:
     branches: [xuper-vod-media-fallback]
     paths:
       - 'tools/build_vod_media_fallback.sh'
+      - 'tools/build_vod_v9_gadget.sh'
       - '.github/workflows/test-vod-media-fallback.yml'
 
 jobs:
