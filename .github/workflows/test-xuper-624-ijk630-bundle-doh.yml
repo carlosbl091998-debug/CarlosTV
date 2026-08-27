@@ -1,0 +1,277 @@
+name: Test Xuper 6.2.4 full 6.3 ARM64 IJK bundle DoH
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/test-xuper-624-ijk630-bundle-doh.yml'
+
+jobs:
+  build-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      PKG: com.msandroid.mobile
+      BASE_SHA256: 8ba6eb4a13bdec2d8d8ab06a1502194f488ce58d9fb6de7feeb1c539ef0f7b4e
+      DONOR630_APK_SHA256: d4edfc8ee9fbc008f9daa2cbb3aac733939987b7570bfc58a7065ebecfaa510a
+      PLAYER630_SHA256: 6d47108c205f27a5a5867fac467da5b078ce71722f07611bf00ad0040390baeb
+      FFMPEG630_SHA256: 5e985ef908b39d2eb4fe67d7da97824a6e55ab6bbcd0aabe3dcc90b210add1fb
+      SDL630_SHA256: 2257b00c4969e6f8aaed5751e997b83921ebf91d24b9d75bfe7dd14df2be150a
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager 'build-tools;35.0.0' >/dev/null
+          echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
+
+      - name: Recover exact stable 6.2.4 checkpoint
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/base
+          curl -fL --retry 4 --retry-all-errors \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            'https://api.github.com/repos/carlosbl091998-debug/CarlosTV/actions/artifacts/9623417943/zip' \
+            -o /tmp/base.zip
+          unzip -q /tmp/base.zip -d /tmp/base
+          BASE=''
+          while IFS= read -r candidate; do
+            sha=$(sha256sum "$candidate" | awk '{print $1}')
+            echo "candidate=$candidate sha=$sha"
+            if [ "$sha" = "$BASE_SHA256" ]; then BASE="$candidate"; break; fi
+          done < <(find /tmp/base -type f -name '*.apk' -print)
+          test -n "$BASE"
+          cp "$BASE" stable-624.apk
+          test "$(sha256sum stable-624.apk | awk '{print $1}')" = "$BASE_SHA256"
+          echo "BASE_OK=$BASE_SHA256"
+
+      - name: Recover exact 6.3 donor with DNS over HTTPS
+        shell: bash
+        run: |
+          set -euo pipefail
+          HOST='magisapktv.com'
+          URL='https://magisapktv.com/files/magis-celular-magisapktv.com.apk'
+          rm -f donor-630.apk /tmp/donor.apk /tmp/doh.json
+
+          accept_candidate() {
+            local f="$1"
+            [ -s "$f" ] || return 1
+            local sha bytes
+            sha=$(sha256sum "$f" | awk '{print $1}')
+            bytes=$(stat -c '%s' "$f")
+            echo "CANDIDATE bytes=$bytes sha=$sha"
+            if [ "$sha" = "$DONOR630_APK_SHA256" ] && [ "$bytes" = '35766216' ]; then
+              unzip -t "$f" >/dev/null
+              mv "$f" donor-630.apk
+              return 0
+            fi
+            return 1
+          }
+
+          echo 'TRY=DIRECT'
+          if curl -fL --connect-timeout 8 --max-time 90 --retry 1 --retry-all-errors \
+              -A 'Mozilla/5.0' "$URL" -o /tmp/donor.apk 2>/tmp/direct.err; then
+            accept_candidate /tmp/donor.apk || rm -f /tmp/donor.apk
+          else
+            cat /tmp/direct.err || true
+          fi
+
+          if [ ! -f donor-630.apk ]; then
+            echo 'TRY=GOOGLE_DOH'
+            if curl -fsSL --connect-timeout 10 --max-time 30 \
+                -H 'Accept: application/dns-json' \
+                'https://dns.google/resolve?name=magisapktv.com&type=A' -o /tmp/doh.json; then
+              cat /tmp/doh.json
+              IP=$(python3 - <<'PY'
+          import json
+          try:
+              d=json.load(open('/tmp/doh.json'))
+          except Exception:
+              d={}
+          for a in d.get('Answer', []) or []:
+              if a.get('type') == 1 and isinstance(a.get('data'), str):
+                  print(a['data'])
+                  break
+          PY
+              )
+              echo "GOOGLE_DOH_IP=${IP:-NONE}"
+              if [ -n "${IP:-}" ]; then
+                rm -f /tmp/donor.apk
+                if curl -fL --resolve "$HOST:443:$IP" --connect-timeout 10 --max-time 120 --retry 2 --retry-all-errors \
+                    -A 'Mozilla/5.0' "$URL" -o /tmp/donor.apk; then
+                  accept_candidate /tmp/donor.apk || rm -f /tmp/donor.apk
+                fi
+              fi
+            fi
+          fi
+
+          if [ ! -f donor-630.apk ]; then
+            echo 'TRY=CLOUDFLARE_DOH'
+            if curl -fsSL --connect-timeout 10 --max-time 30 \
+                -H 'Accept: application/dns-json' \
+                'https://cloudflare-dns.com/dns-query?name=magisapktv.com&type=A' -o /tmp/doh.json; then
+              cat /tmp/doh.json
+              IP=$(python3 - <<'PY'
+          import json
+          try:
+              d=json.load(open('/tmp/doh.json'))
+          except Exception:
+              d={}
+          for a in d.get('Answer', []) or []:
+              if a.get('type') == 1 and isinstance(a.get('data'), str):
+                  print(a['data'])
+                  break
+          PY
+              )
+              echo "CF_DOH_IP=${IP:-NONE}"
+              if [ -n "${IP:-}" ]; then
+                rm -f /tmp/donor.apk
+                if curl -fL --resolve "$HOST:443:$IP" --connect-timeout 10 --max-time 120 --retry 2 --retry-all-errors \
+                    -A 'Mozilla/5.0' "$URL" -o /tmp/donor.apk; then
+                  accept_candidate /tmp/donor.apk || rm -f /tmp/donor.apk
+                fi
+              fi
+            fi
+          fi
+
+          test -f donor-630.apk
+          echo "DONOR_APK_SHA=$(sha256sum donor-630.apk | awk '{print $1}')"
+          echo 'DONOR_APK=PASS'
+
+      - name: Extract and verify complete 6.3 ARM64 IJK bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p donor630 base624 diagnostics-ijk630-bundle
+          for f in libijkplayer.so libijkffmpeg.so libijksdl.so; do
+            unzip -p donor-630.apk "lib/arm64-v8a/$f" > "donor630/$f"
+            unzip -p stable-624.apk "lib/arm64-v8a/$f" > "base624/$f"
+            file "donor630/$f" | tee -a diagnostics-ijk630-bundle/elf-files.txt
+            readelf -h "donor630/$f" | grep -E 'Class:|Machine:' | tee -a diagnostics-ijk630-bundle/elf-files.txt
+            readelf -d "donor630/$f" | grep NEEDED > "diagnostics-ijk630-bundle/${f%.so}-needed-630.txt" || true
+          done
+          grep -q 'AArch64' diagnostics-ijk630-bundle/elf-files.txt
+          test "$(sha256sum donor630/libijkplayer.so | awk '{print $1}')" = "$PLAYER630_SHA256"
+          test "$(sha256sum donor630/libijkffmpeg.so | awk '{print $1}')" = "$FFMPEG630_SHA256"
+          test "$(sha256sum donor630/libijksdl.so | awk '{print $1}')" = "$SDL630_SHA256"
+          sha256sum donor630/*.so base624/*.so | tee diagnostics-ijk630-bundle/native-sha256.txt
+          echo 'IJK630_ARM64_BUNDLE=PASS'
+
+      - name: Build and sign full ARM64 IJK bundle hybrid
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import zipfile
+          src='stable-624.apk'
+          out='hybrid-bundle-unsigned.apk'
+          targets={
+              'lib/arm64-v8a/libijkplayer.so': open('donor630/libijkplayer.so','rb').read(),
+              'lib/arm64-v8a/libijkffmpeg.so': open('donor630/libijkffmpeg.so','rb').read(),
+              'lib/arm64-v8a/libijksdl.so': open('donor630/libijksdl.so','rb').read(),
+          }
+          with zipfile.ZipFile(src) as zin, zipfile.ZipFile(out,'w',allowZip64=True) as zout:
+              for item in zin.infolist():
+                  if item.filename.startswith('META-INF/') or item.filename in targets:
+                      continue
+                  data=zin.read(item.filename)
+                  ni=zipfile.ZipInfo(item.filename,item.date_time)
+                  ni.compress_type=item.compress_type
+                  ni.comment=item.comment
+                  ni.extra=item.extra
+                  ni.internal_attr=item.internal_attr
+                  ni.external_attr=item.external_attr
+                  ni.create_system=item.create_system
+                  zout.writestr(ni,data)
+              for path,data in targets.items():
+                  ni=zipfile.ZipInfo(path)
+                  ni.compress_type=zipfile.ZIP_STORED
+                  ni.external_attr=0o100755 << 16
+                  zout.writestr(ni,data)
+          PY
+          zipalign -P 16 -f 4 hybrid-bundle-unsigned.apk hybrid-bundle-aligned.apk
+          keytool -genkeypair -keystore /tmp/test.keystore -storepass android -keypass android \
+            -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname 'CN=Android Debug,O=Android,C=US' >/dev/null 2>&1
+          apksigner sign --ks /tmp/test.keystore --ks-pass pass:android --key-pass pass:android \
+            --out Xuper-6.2.4-IJK630-Bundle-arm64.apk hybrid-bundle-aligned.apk
+          apksigner verify --verbose --print-certs Xuper-6.2.4-IJK630-Bundle-arm64.apk | tee diagnostics-ijk630-bundle/signature.txt
+
+      - name: Verify exact changes and APK integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in classes.dex resources.arsc; do
+            A=$(unzip -p stable-624.apk "$f" | sha256sum | awk '{print $1}')
+            B=$(unzip -p Xuper-6.2.4-IJK630-Bundle-arm64.apk "$f" | sha256sum | awk '{print $1}')
+            echo "$f base=$A hybrid=$B" | tee -a diagnostics-ijk630-bundle/invariants.txt
+            test "$A" = "$B"
+          done
+          for f in libijkplayer.so libijkffmpeg.so libijksdl.so; do
+            B=$(unzip -p Xuper-6.2.4-IJK630-Bundle-arm64.apk "lib/arm64-v8a/$f" | sha256sum | awk '{print $1}')
+            D=$(sha256sum "donor630/$f" | awk '{print $1}')
+            echo "$f hybrid=$B donor=$D" | tee -a diagnostics-ijk630-bundle/invariants.txt
+            test "$B" = "$D"
+          done
+          unzip -t Xuper-6.2.4-IJK630-Bundle-arm64.apk | tail -2 | tee diagnostics-ijk630-bundle/zip-test.txt
+          sha256sum stable-624.apk donor-630.apk Xuper-6.2.4-IJK630-Bundle-arm64.apk | tee diagnostics-ijk630-bundle/apk-sha256.txt
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install and launch package on Android 16 x86_64
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          script: |
+            adb shell getprop ro.product.cpu.abi | tee diagnostics-ijk630-bundle/emulator-abi.txt
+            adb uninstall com.msandroid.mobile >/dev/null 2>&1 || true
+            adb install -g Xuper-6.2.4-IJK630-Bundle-arm64.apk | tee diagnostics-ijk630-bundle/install.txt
+            grep -q 'Success' diagnostics-ijk630-bundle/install.txt
+            adb logcat -c
+            adb shell monkey -p com.msandroid.mobile -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+            sleep 8
+            adb shell pidof com.msandroid.mobile | tr -d '\r[:space:]' | tee diagnostics-ijk630-bundle/pid8.txt
+            test -s diagnostics-ijk630-bundle/pid8.txt
+            sleep 12
+            adb shell pidof com.msandroid.mobile | tr -d '\r[:space:]' | tee diagnostics-ijk630-bundle/pid20.txt
+            test -s diagnostics-ijk630-bundle/pid20.txt
+            adb shell dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity' | tee diagnostics-ijk630-bundle/activity.txt || true
+            adb logcat -d -v threadtime | grep -Eai 'FATAL EXCEPTION|AndroidRuntime|UnsatisfiedLinkError|dlopen failed|linker|ijk|ffmpeg|player' | tail -600 > diagnostics-ijk630-bundle/runtime-errors.txt || true
+            adb exec-out screencap -p > diagnostics-ijk630-bundle/screen-20s.png || true
+            echo 'INSTALL_LAUNCH_ANDROID16_X86_64=PASS' | tee diagnostics-ijk630-bundle/result.txt
+
+      - name: Upload tested bundle hybrid and diagnostics
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xuper-624-ijk630-bundle-arm64-doh-tested
+          path: |
+            Xuper-6.2.4-IJK630-Bundle-arm64.apk
+            diagnostics-ijk630-bundle/**
+          retention-days: 7
+          if-no-files-found: error
