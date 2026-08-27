@@ -15,7 +15,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Prepare stable checkpoint APK
+
+      - name: Prepare exact stable checkpoint APK
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -30,32 +31,84 @@ jobs:
           unzip -q work/stable.zip -d work/stable
           APK="$(find work/stable -type f -name '*.apk' | head -1)"
           cp "$APK" work/stable.apk
-          sha256sum work/stable.apk | tee out/apk-sha256.txt
-      - name: Decompile only relevant VOD code
+          SHA="$(sha256sum work/stable.apk | awk '{print $1}')"
+          echo "$SHA  work/stable.apk" | tee out/apk-sha256.txt
+          test "$SHA" = '8ba6eb4a13bdec2d8d8ab06a1502194f488ce58d9fb6de7feeb1c539ef0f7b4e'
+          unzip -p work/stable.apk classes.dex > work/classes.dex
+
+      - name: Prove VOD symbols exist in raw DEX
+        run: |
+          set -euo pipefail
+          strings -a work/classes.dex > work/classes.strings
+          grep -niE 'startPlayVOD|GetVodPlayUrl|StartPlayVOD|PlayAty|vod_no_media|play_infos|episodeList|labelSequence|switchVodSourceTime|sequence|freeVodCode|media_code' \
+            work/classes.strings | tee out/raw-dex-vod-symbols.txt || true
+          test -s out/raw-dex-vod-symbols.txt
+
+      - name: Decompile full APK with JADX
         run: |
           set -euo pipefail
           curl -fL --retry 4 --retry-all-errors \
             'https://github.com/skylot/jadx/releases/download/v1.5.5/jadx-1.5.5.zip' \
             -o work/jadx.zip
           unzip -q work/jadx.zip -d work/jadx
-          chmod +x work/jadx/bin/jadx work/jadx/bin/jadx-gui || true
-          work/jadx/bin/jadx --no-res --show-bad-code --comments-level debug \
-            -d work/src work/stable.apk > out/jadx-console.txt 2>&1 || true
-          mkdir -p out/classes
-          find work/src/sources -type f \( \
-            -path '*com/mobile/brasiltv/activity/PlayAty*' -o \
-            -path '*mobile/com/requestframe/utils/bean/StartPlayVODBean*' -o \
-            -path '*mobile/com/requestframe/utils/response/StartPlayVODData*' -o \
-            -path '*mobile/com/requestframe/utils/response/StartPlayVODResult*' \
-          \) -print -exec cp --parents {} out/classes/ \; || true
-          grep -RniE 'startPlayVOD|episodeList|media|stream|sequence|returnCode|returnMsg|toast|PlayAty' \
-            work/src/sources/com/mobile/brasiltv \
-            work/src/sources/mobile/com/requestframe 2>/dev/null \
-            | head -5000 > out/vod-references.txt || true
-          grep -RniE 'api/portalCore/v(9|10)/startPlayVOD' work/src/sources 2>/dev/null \
-            | head -1000 > out/vod-endpoint-references.txt || true
+          chmod +x work/jadx/bin/jadx
+          set +e
+          work/jadx/bin/jadx --no-res --show-bad-code --comments-level debug --deobf \
+            -d work/src work/stable.apk > out/jadx-console.txt 2>&1
+          RC=$?
+          set -e
+          echo "JADX_RC=$RC" | tee out/jadx-rc.txt
+          find work/src -type f | wc -l | tee out/decompiled-file-count.txt
+
+      - name: Locate VOD implementation globally
+        run: |
+          set -euo pipefail
+          PAT='startPlayVOD|GetVodPlayUrl|StartPlayVOD|PlayAty|vod_no_media|play_infos|episodeList|labelSequence|switchVodSourceTime|switchVodSourceTimeV2|sequence|freeVodCode|media_code|startPlayCheck'
+          grep -RniE "$PAT" work/src 2>/dev/null | head -n 12000 | tee out/vod-references-global.txt || true
+          mkdir -p out/matching-files
+          grep -RIlE "$PAT" work/src 2>/dev/null | sort -u > out/matching-file-list.txt || true
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            rel="${f#work/src/}"
+            mkdir -p "out/matching-files/$(dirname "$rel")"
+            cp "$f" "out/matching-files/$rel"
+          done < out/matching-file-list.txt
+          echo "MATCH_COUNT=$(wc -l < out/matching-file-list.txt)" | tee out/match-count.txt
+          test -s out/matching-file-list.txt
+
+      - name: Extract focused method context
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          root=Path('work/src')
+          pats=re.compile(r'startPlayVOD|GetVodPlayUrl|StartPlayVOD|PlayAty|vod_no_media|play_infos|episodeList|labelSequence|switchVodSourceTime|sequence|freeVodCode|media_code|startPlayCheck', re.I)
+          out=[]
+          for p in root.rglob('*'):
+              if not p.is_file():
+                  continue
+              try: lines=p.read_text(errors='ignore').splitlines()
+              except Exception: continue
+              hits=[i for i,l in enumerate(lines) if pats.search(l)]
+              if not hits: continue
+              out.append(f'===== {p} =====')
+              seen=set()
+              for i in hits:
+                  a=max(0,i-25); b=min(len(lines),i+36)
+                  key=(a,b)
+                  if key in seen: continue
+                  seen.add(key)
+                  out.append(f'--- lines {a+1}-{b} ---')
+                  for n in range(a,b):
+                      out.append(f'{n+1:06d}: {lines[n]}')
+          Path('out/vod-context.txt').write_text('\n'.join(out))
+          PY
+          test -s out/vod-context.txt
+
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: vod-playaty-analysis
+          name: vod-playaty-analysis-v3
           path: out/**
           retention-days: 7
