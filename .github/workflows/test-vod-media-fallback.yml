@@ -39,7 +39,7 @@ jobs:
           unzip -l "$APK" | grep -F 'lib/arm64-v8a/libgadget.so'
           unzip -l "$APK" | grep -F 'lib/arm64-v8a/libgadget.config.so'
           unzip -l "$APK" | grep -F 'lib/arm64-v8a/libgadget.script.so'
-          unzip -p "$APK" lib/arm64-v8a/libgadget.script.so | tee "$OUT/vod-hook.js" | grep -F 'XUPER_VOD_MEDIA'
+          unzip -p "$APK" lib/arm64-v8a/libgadget.script.so | tee "$OUT/vod-hook.js" | grep -aF 'XUPER_VOD_MEDIA'
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
           "$APKSIGNER" verify --verbose --print-certs "$APK" > "$OUT/apksigner-verify.txt"
           echo 'ARM64_VOD_HOOK_PACKAGE_OK' | tee "$OUT/package-result.txt"
@@ -51,7 +51,7 @@ jobs:
           sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm
 
-      - name: Write Android 16 validation script
+      - name: Write strict 60 second Android 16 validation script
         run: |
           cat > /tmp/validate-vod-media.sh <<'BASH'
           #!/usr/bin/env bash
@@ -59,39 +59,56 @@ jobs:
           OUT='diagnostics-vod-media-fallback'
           APK="$OUT/Xuper-6.2.4-VOD-MediaFallback-Test.apk"
           PKG='com.msandroid.mobile'
+
           adb uninstall "$PKG" >/dev/null 2>&1 || true
           adb install -g "$APK" | tee "$OUT/install.txt"
           adb logcat -c
           adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 > "$OUT/launch.txt" 2>&1 || true
-          sleep 20
-          PID20=$(adb shell pidof "$PKG" | tr -d '\r' || true)
-          adb exec-out screencap -p > "$OUT/screen-20.png" || true
-          sleep 40
-          PID60=$(adb shell pidof "$PKG" | tr -d '\r' || true)
-          adb exec-out screencap -p > "$OUT/screen-60.png" || true
-          adb logcat -d -v threadtime > "$OUT/logcat.txt" || true
-          echo "pid20=$PID20 pid60=$PID60" | tee "$OUT/runtime-result.txt"
-          grep -Ei 'XUPER_VOD_MEDIA|frida|gadget' "$OUT/logcat.txt" | tail -250 > "$OUT/gadget-log.txt" || true
 
-          if [[ -z "$PID20" || -z "$PID60" ]]; then
-            if grep -Fq 'libDexHelper-x86.so' "$OUT/logcat.txt" && grep -Eqi 'Fatal signal 11|SIGSEGV' "$OUT/logcat.txt"; then
-              echo 'ANDROID16_X86_SECNEO_TRANSLATION_UNSUPPORTED' | tee -a "$OUT/runtime-result.txt"
-              echo 'APK_INSTALL_OK_ARM_RUNTIME_REQUIRED' | tee -a "$OUT/runtime-result.txt"
-              exit 0
-            fi
-            echo 'UNEXPECTED_RUNTIME_DEATH' | tee -a "$OUT/runtime-result.txt"
+          # The APK is valid only if the same application process remains alive
+          # continuously for a complete minute after launch.
+          sleep 5
+          INITIAL_PID=$(adb shell pidof "$PKG" | tr -d '\r' || true)
+          echo "initial_pid=$INITIAL_PID" | tee "$OUT/runtime-result.txt"
+          if [[ -z "$INITIAL_PID" ]]; then
+            adb logcat -d -v threadtime > "$OUT/logcat.txt" || true
+            echo 'PROCESS_NOT_ALIVE_AT_5S' | tee -a "$OUT/runtime-result.txt"
             exit 71
           fi
 
-          if grep -Eqi 'FATAL EXCEPTION|UnsatisfiedLinkError|SIGABRT|Fatal signal' "$OUT/logcat.txt"; then
-            grep -Ein 'FATAL EXCEPTION|UnsatisfiedLinkError|SIGABRT|Fatal signal' "$OUT/logcat.txt" | tail -80
+          for elapsed in 10 15 20 25 30 35 40 45 50 55 60; do
+            sleep 5
+            PID=$(adb shell pidof "$PKG" | tr -d '\r' || true)
+            echo "t=${elapsed}s pid=$PID" | tee -a "$OUT/runtime-result.txt"
+            if [[ -z "$PID" ]]; then
+              adb logcat -d -v threadtime > "$OUT/logcat.txt" || true
+              adb exec-out screencap -p > "$OUT/screen-failure-${elapsed}.png" || true
+              echo "PROCESS_DIED_AT_${elapsed}S" | tee -a "$OUT/runtime-result.txt"
+              exit 72
+            fi
+            if [[ "$PID" != "$INITIAL_PID" ]]; then
+              adb logcat -d -v threadtime > "$OUT/logcat.txt" || true
+              adb exec-out screencap -p > "$OUT/screen-restart-${elapsed}.png" || true
+              echo "PROCESS_RESTARTED_AT_${elapsed}S old=$INITIAL_PID new=$PID" | tee -a "$OUT/runtime-result.txt"
+              exit 73
+            fi
+          done
+
+          adb exec-out screencap -p > "$OUT/screen-60.png" || true
+          adb logcat -d -v threadtime > "$OUT/logcat.txt" || true
+          grep -Ei 'XUPER_VOD_MEDIA|frida|gadget' "$OUT/logcat.txt" | tail -250 > "$OUT/gadget-log.txt" || true
+
+          if grep -Eqi 'FATAL EXCEPTION|UnsatisfiedLinkError|SIGABRT|Fatal signal|SIGSEGV' "$OUT/logcat.txt"; then
+            grep -Ein 'FATAL EXCEPTION|UnsatisfiedLinkError|SIGABRT|Fatal signal|SIGSEGV' "$OUT/logcat.txt" | tail -80
+            echo 'FATAL_RUNTIME_ERROR_WITHIN_60S' | tee -a "$OUT/runtime-result.txt"
             exit 70
           fi
-          echo 'ANDROID16_X86_RUNTIME_OK' | tee -a "$OUT/runtime-result.txt"
+
+          echo 'ANDROID16_CONTINUOUS_60S_RUNTIME_OK' | tee -a "$OUT/runtime-result.txt"
           BASH
           chmod +x /tmp/validate-vod-media.sh
 
-      - name: Validate install and diagnose SecNeo runtime on Android 16
+      - name: Require app alive continuously for 60 seconds on Android 16
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 36
