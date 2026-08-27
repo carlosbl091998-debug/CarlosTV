@@ -14,10 +14,25 @@ jobs:
     env:
       ARTIFACT_ID: '9633216673'
       PACKAGE: com.msandroid.mobile
+      ANDROID_SDK_ROOT: /home/runner/android-sdk
     steps:
       - uses: actions/checkout@v4
 
-      - uses: android-actions/setup-android@v3
+      - name: Install Android command-line tools without setup-android
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+          curl -fL --retry 4 --retry-all-errors \
+            'https://dl.google.com/android/repository/commandlinetools-linux-12266719_latest.zip' \
+            -o /tmp/cmdline-tools.zip
+          rm -rf /tmp/cmdline-tools-unpack
+          mkdir -p /tmp/cmdline-tools-unpack
+          unzip -q /tmp/cmdline-tools.zip -d /tmp/cmdline-tools-unpack
+          mv /tmp/cmdline-tools-unpack/cmdline-tools "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
+          echo "$ANDROID_SDK_ROOT/emulator" >> "$GITHUB_PATH"
 
       - name: Verify ARM64 host and install Android 16 ARM64 emulator
         shell: bash
