@@ -1,4 +1,4 @@
-name: Test official Xuper 6.5.5 Android 16 10-30-45
+name: Test Xuper mobile 6.5.5 Android 16 10-30-45
 
 on:
   workflow_dispatch:
@@ -21,24 +21,31 @@ jobs:
           java-version: '17'
       - uses: android-actions/setup-android@v3
 
-      - name: Download official update APK
+      - name: Resolve community-listed mobile 6.5.5 installer
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p out
-          URL='https://gaeg.xvmobdes.com/download'
+          URL='https://aftvnews.com/3154861'
           UA='Mozilla/5.0 (Linux; Android 16; Pixel 6) AppleWebKit/537.36 Chrome/140 Mobile Safari/537.36'
           curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 180 -A "$UA" "$URL" -o /tmp/xuper.bin
           if ! unzip -t /tmp/xuper.bin >/dev/null 2>&1; then
             python3 - <<'PY'
           import html,re
-          raw=open('/tmp/xuper.bin','rb').read(2500000).decode('utf-8','ignore')
+          raw=open('/tmp/xuper.bin','rb').read(3000000).decode('utf-8','ignore')
           raw=html.unescape(raw).replace('\\/','/')
           urls=[]
-          for pat in [r'https?://[^\"\'<>\s]+?\.apk(?:\?[^\"\'<>\s]*)?',r'https?://[^\"\'<>\s]+?/download[^\"\'<>\s]*']:
+          pats=[
+            r'https?://[^\"\'<>\s]+?\.apk(?:\?[^\"\'<>\s]*)?',
+            r'https?://[^\"\'<>\s]+?/download[^\"\'<>\s]*',
+            r'https?://[^\"\'<>\s]+?/(?:file|files)/[^\"\'<>\s]+'
+          ]
+          for pat in pats:
               urls += re.findall(pat,raw,re.I)
-          urls=[u for u in urls if u!='https://gaeg.xvmobdes.com/download']
-          if not urls: raise SystemExit('No APK/download URL found')
+          urls=[u.rstrip(');,') for u in urls if '3154861' not in u or 'aftvnews.com' not in u]
+          if not urls:
+              open('out/landing-preview.txt','w').write(raw[:100000])
+              raise SystemExit('No APK/download URL found in AFTV landing response')
           open('/tmp/discovered-url.txt','w').write(urls[0])
           PY
             U="$(cat /tmp/discovered-url.txt)"
@@ -48,21 +55,23 @@ jobs:
             echo 'DIRECT_APK=1' | tee out/source.txt
           fi
           unzip -t /tmp/xuper.bin >/dev/null
-          cp /tmp/xuper.bin out/Xuper-6.5.5-official.apk
-          sha256sum out/Xuper-6.5.5-official.apk | tee out/sha256.txt
+          cp /tmp/xuper.bin out/Xuper-6.5.5-candidate.apk
+          sha256sum out/Xuper-6.5.5-candidate.apk | tee out/sha256.txt
 
-      - name: Validate package version and signature
+      - name: Validate exact package version and original signer
         shell: bash
         run: |
           set -euo pipefail
           AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
-          "$AAPT" dump badging out/Xuper-6.5.5-official.apk | tee out/badging.txt
+          "$AAPT" dump badging out/Xuper-6.5.5-candidate.apk | tee out/badging.txt
           grep -q "package: name='com.msandroid.mobile'" out/badging.txt
           grep -q "versionCode='60505'" out/badging.txt
           grep -q "versionName='6.5.5'" out/badging.txt
-          "$APKSIGNER" verify --verbose --print-certs out/Xuper-6.5.5-official.apk | tee out/signing.txt
-          grep -q 'Verifies' out/signing.txt
+          "$APKSIGNER" verify --verbose --print-certs out/Xuper-6.5.5-candidate.apk | tee out/signing.txt
+          grep -qi 'd30dc60fd8625d49fa4e82eb442c9307743f9621004b94e229dcc01f6a9035ff' out/signing.txt
+          cp out/Xuper-6.5.5-candidate.apk out/Xuper-6.5.5-original-signer.apk
+          echo 'IDENTITY_655_AND_ORIGINAL_SIGNER=PASS' | tee out/identity-result.txt
 
       - name: Enable KVM
         shell: bash
@@ -82,7 +91,7 @@ jobs:
           emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
           script: |
             set -eu
-            adb install -r out/Xuper-6.5.5-official.apk > out/install.txt 2>&1 || { cat out/install.txt; exit 11; }
+            adb install -r out/Xuper-6.5.5-original-signer.apk > out/install.txt 2>&1 || { cat out/install.txt; exit 11; }
             cat out/install.txt
             adb logcat -c
             adb shell am force-stop com.msandroid.mobile
@@ -104,10 +113,10 @@ jobs:
             ! grep -E 'FATAL EXCEPTION|SIGSEGV|UnsatisfiedLinkError' out/logcat.txt | grep 'com.msandroid.mobile' || exit 15
             echo 'LIVENESS_10_30_45=PASS' | tee out/result.txt
 
-      - name: Upload official APK and diagnostics
+      - name: Upload candidate and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: xuper-655-official-android16-10-30-45
+          name: xuper-mobile-655-original-signer-android16-10-30-45
           path: out/**
           retention-days: 7
