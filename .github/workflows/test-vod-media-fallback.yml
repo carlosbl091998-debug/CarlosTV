@@ -1,4 +1,4 @@
-name: Test Xuper VOD media fallback on Android 16
+name: Test Xuper VOD media fallback on native ARM64 Android 16
 
 on:
   workflow_dispatch:
@@ -11,7 +11,9 @@ on:
 
 jobs:
   build-and-test:
-    runs-on: ubuntu-24.04
+    # SecNeo crashes under x86_64/Berberis before our hook is loaded. Test on
+    # a native ARM64 host/emulator so the result matches a real ARM64 phone.
+    runs-on: macos-14
     timeout-minutes: 45
     permissions:
       contents: read
@@ -25,12 +27,25 @@ jobs:
           java-version: '17'
       - uses: android-actions/setup-android@v3
 
+      - name: Prepare native ARM64 Android 16 emulator
+        shell: bash
+        run: |
+          set -euxo pipefail
+          uname -a | tee host.txt
+          test "$(uname -m)" = 'arm64'
+          sdkmanager 'platform-tools' 'emulator' 'build-tools;35.0.0' 'system-images;android-36;google_apis;arm64-v8a' >/dev/null
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/emulator" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
+
       - name: Build runtime media fallback candidate
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash tools/build_vod_media_fallback.sh
 
       - name: Verify packaged ARM64 VOD hook
+        shell: bash
         run: |
           set -euxo pipefail
           OUT='diagnostics-vod-media-fallback'
@@ -38,23 +53,37 @@ jobs:
           unzip -l "$APK" | tee "$OUT/package-files.txt"
           unzip -l "$APK" | grep -F 'lib/arm64-v8a/libgadget.so'
           unzip -l "$APK" | grep -F 'lib/arm64-v8a/libgadget.config.so'
-          unzip -l "$APK" | grep -F 'lib/arm64-v8a/libgadget.script.so'
           unzip -p "$APK" lib/arm64-v8a/libgadget.script.so | tee "$OUT/vod-hook.js" | grep -aF 'XUPER_VOD_MEDIA'
-          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
           "$APKSIGNER" verify --verbose --print-certs "$APK" > "$OUT/apksigner-verify.txt"
           echo 'ARM64_VOD_HOOK_PACKAGE_OK' | tee "$OUT/package-result.txt"
 
-      - name: Enable KVM
+      - name: Create ARM64 AVD
+        shell: bash
         run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          ls -l /dev/kvm
+          set -euxo pipefail
+          echo no | avdmanager create avd -n arm64_api36 -k 'system-images;android-36;google_apis;arm64-v8a' -d pixel_6 --force
 
-      - name: Write strict 60 second Android 16 validation script
+      - name: Start native ARM64 emulator
+        shell: bash
         run: |
-          cat > /tmp/validate-vod-media.sh <<'BASH'
-          #!/usr/bin/env bash
+          set -euxo pipefail
+          nohup emulator -avd arm64_api36 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect -accel off > emulator.log 2>&1 &
+          echo $! > emulator.pid
+          adb wait-for-device
+          for i in $(seq 1 180); do
+            BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            if [ "$BOOT" = '1' ]; then break; fi
+            sleep 2
+          done
+          test "$(adb shell getprop sys.boot_completed | tr -d '\r')" = '1'
+          adb shell getprop ro.product.cpu.abi | tee device-abi.txt
+          adb shell getprop ro.product.cpu.abilist | tee device-abis.txt
+          grep -q '^arm64-v8a' device-abi.txt
+
+      - name: Require same app process alive continuously for 60 seconds
+        shell: bash
+        run: |
           set -euxo pipefail
           OUT='diagnostics-vod-media-fallback'
           APK="$OUT/Xuper-6.2.4-VOD-MediaFallback-Test.apk"
@@ -65,29 +94,30 @@ jobs:
           adb logcat -c
           adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 > "$OUT/launch.txt" 2>&1 || true
 
-          # The APK is valid only if the same application process remains alive
-          # continuously for a complete minute after launch.
           sleep 5
-          INITIAL_PID=$(adb shell pidof "$PKG" | tr -d '\r' || true)
+          INITIAL_PID=$(adb shell pidof "$PKG" | tr -d '\r[:space:]' || true)
           echo "initial_pid=$INITIAL_PID" | tee "$OUT/runtime-result.txt"
           if [[ -z "$INITIAL_PID" ]]; then
             adb logcat -d -v threadtime > "$OUT/logcat.txt" || true
+            adb logcat -b crash -d -v threadtime > "$OUT/crash-buffer.txt" || true
             echo 'PROCESS_NOT_ALIVE_AT_5S' | tee -a "$OUT/runtime-result.txt"
             exit 71
           fi
 
           for elapsed in 10 15 20 25 30 35 40 45 50 55 60; do
             sleep 5
-            PID=$(adb shell pidof "$PKG" | tr -d '\r' || true)
+            PID=$(adb shell pidof "$PKG" | tr -d '\r[:space:]' || true)
             echo "t=${elapsed}s pid=$PID" | tee -a "$OUT/runtime-result.txt"
             if [[ -z "$PID" ]]; then
               adb logcat -d -v threadtime > "$OUT/logcat.txt" || true
+              adb logcat -b crash -d -v threadtime > "$OUT/crash-buffer.txt" || true
               adb exec-out screencap -p > "$OUT/screen-failure-${elapsed}.png" || true
               echo "PROCESS_DIED_AT_${elapsed}S" | tee -a "$OUT/runtime-result.txt"
               exit 72
             fi
             if [[ "$PID" != "$INITIAL_PID" ]]; then
               adb logcat -d -v threadtime > "$OUT/logcat.txt" || true
+              adb logcat -b crash -d -v threadtime > "$OUT/crash-buffer.txt" || true
               adb exec-out screencap -p > "$OUT/screen-restart-${elapsed}.png" || true
               echo "PROCESS_RESTARTED_AT_${elapsed}S old=$INITIAL_PID new=$PID" | tee -a "$OUT/runtime-result.txt"
               exit 73
@@ -96,33 +126,23 @@ jobs:
 
           adb exec-out screencap -p > "$OUT/screen-60.png" || true
           adb logcat -d -v threadtime > "$OUT/logcat.txt" || true
-          grep -Ei 'XUPER_VOD_MEDIA|frida|gadget' "$OUT/logcat.txt" | tail -250 > "$OUT/gadget-log.txt" || true
+          adb logcat -b crash -d -v threadtime > "$OUT/crash-buffer.txt" || true
+          grep -Ei 'XUPER_VOD_MEDIA|frida|gadget|secneo|libDexHelper' "$OUT/logcat.txt" | tail -300 > "$OUT/runtime-key-log.txt" || true
 
-          if grep -Eqi 'FATAL EXCEPTION|UnsatisfiedLinkError|SIGABRT|Fatal signal|SIGSEGV' "$OUT/logcat.txt"; then
-            grep -Ein 'FATAL EXCEPTION|UnsatisfiedLinkError|SIGABRT|Fatal signal|SIGSEGV' "$OUT/logcat.txt" | tail -80
+          if grep -Eqi 'FATAL EXCEPTION|UnsatisfiedLinkError|SIGABRT|Fatal signal|SIGSEGV' "$OUT/logcat.txt" "$OUT/crash-buffer.txt"; then
             echo 'FATAL_RUNTIME_ERROR_WITHIN_60S' | tee -a "$OUT/runtime-result.txt"
             exit 70
           fi
-
-          echo 'ANDROID16_CONTINUOUS_60S_RUNTIME_OK' | tee -a "$OUT/runtime-result.txt"
-          BASH
-          chmod +x /tmp/validate-vod-media.sh
-
-      - name: Require app alive continuously for 60 seconds on Android 16
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 36
-          target: google_apis
-          arch: x86_64
-          profile: pixel_6
-          disable-animations: true
-          emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
-          script: bash /tmp/validate-vod-media.sh
+          echo 'ANDROID16_NATIVE_ARM64_CONTINUOUS_60S_RUNTIME_OK' | tee -a "$OUT/runtime-result.txt"
 
       - name: Upload candidate and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: xuper-vod-media-fallback-candidate
-          path: diagnostics-vod-media-fallback/**
+          name: xuper-vod-media-fallback-native-arm64
+          path: |
+            diagnostics-vod-media-fallback/**
+            host.txt
+            device-abi*.txt
+            emulator.log
           retention-days: 7
