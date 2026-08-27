@@ -1,106 +1,49 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PKG='com.msandroid.mobile'
-BASE_OUT='diagnostics-vod-v9-gadget/Xuper-VOD-v9-Gadget-Candidate.apk'
 OUT='diagnostics-vod-media-fallback'
-WORK='/tmp/xuper-vod-media-fallback'
-rm -rf "$OUT" "$WORK"
-mkdir -p "$OUT" "$WORK"
+WORK='/tmp/xuper-vod-static'
+BASE='xuper-stable.apk'
+rm -rf "$OUT" "$WORK" "$BASE"
+mkdir -p "$OUT" "$WORK/base" "$WORK/runtime"
 
 checksum() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1"
-  else
-    shasum -a 256 "$1"
-  fi
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi
 }
 
-bash tools/build_vod_v9_gadget.sh
-cp "$BASE_OUT" "$WORK/gadget-base.apk"
+: "${GH_TOKEN:?GH_TOKEN required}"
+# Known stable APK that opens on the device.
+BASE_ARTIFACT_ID='9623417943'
+curl -fL --retry 4 --retry-all-errors -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' \
+  "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${BASE_ARTIFACT_ID}/zip" -o "$WORK/base.zip"
+unzip -q "$WORK/base.zip" -d "$WORK/base"
+BASE_SRC=''
+while IFS= read -r f; do
+  if [ "$(shasum -a 256 "$f" | awk '{print $1}')" = '8ba6eb4a13bdec2d8d8ab06a1502194f488ce58d9fb6de7feeb1c539ef0f7b4e' ]; then BASE_SRC="$f"; break; fi
+done < <(find "$WORK/base" -type f -name '*.apk')
+test -n "$BASE_SRC"
+cp "$BASE_SRC" "$BASE"
+checksum "$BASE" | tee "$OUT/base-sha256.txt"
+
+# Runtime DEX captured from this same stable build. No Frida/Gadget is embedded in the output APK.
+RUNTIME_ARTIFACT_ID='9635194139'
+curl -fL --retry 4 --retry-all-errors -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' \
+  "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${RUNTIME_ARTIFACT_ID}/zip" -o "$WORK/runtime.zip"
+unzip -q "$WORK/runtime.zip" 'dex-all/runtime-019-5d2a62ef889d.dex' -d "$WORK/runtime"
+RUNTIME_DEX="$WORK/runtime/dex-all/runtime-019-5d2a62ef889d.dex"
+test -s "$RUNTIME_DEX"
+checksum "$RUNTIME_DEX" | tee "$OUT/runtime019-sha256.txt"
 
 APKTOOL="$WORK/apktool.jar"
 curl -fL --retry 3 --retry-all-errors 'https://github.com/iBotPeaches/Apktool/releases/download/v2.11.1/apktool_2.11.1.jar' -o "$APKTOOL"
-java -jar "$APKTOOL" d -f "$WORK/gadget-base.apk" -o "$WORK/decoded" > "$OUT/decode.txt" 2>&1
 
-cat > "$WORK/vod-media-fallback.js" <<'JS'
-'use strict';
-(function () {
-  var installed = false;
-  var attempts = 0;
-  function log(s) { console.log('[XUPER_VOD_MEDIA] ' + s); }
-  function attempt() {
-    if (installed || !Java.available) return;
-    Java.perform(function () {
-      attempts++;
-      try {
-        var Mapper = Java.use('m6.g2$u');
-        var typed = Mapper.invoke.overload('mobile.com.requestframe.utils.response.StartPlayVODResult');
-        typed.implementation = function (result) {
-          var out = typed.call(this, result);
-          try {
-            var data = result ? result.getData() : null;
-            var eps = data ? data.getEpisodeList() : null;
-            if (eps === null || eps.isEmpty()) { log('EMPTY_EPISODE_LIST'); return out; }
-            var episode0 = eps.get(0);
-            var totals = episode0 ? episode0.getTotalMovieList() : null;
-            if (totals === null || totals.isEmpty()) { log('EMPTY_TOTAL_MOVIE_LIST'); return out; }
-            log('episodeList=' + eps.size() + ' totalMovieList=' + totals.size() + ' mapperOut=' + out.size());
-            var firstPlayable = null;
-            for (var i = 0; i < totals.size(); i++) {
-              var item = totals.get(i);
-              if (item === null) continue;
-              var q = item.getQuality();
-              var movies = item.getMovieList();
-              var count = movies === null ? -1 : movies.size();
-              log('source[' + i + '] quality=' + q + ' movieList=' + count);
-              if (firstPlayable === null && movies !== null && !movies.isEmpty()) firstPlayable = item;
-            }
-            if (out !== null && out.isEmpty() && firstPlayable !== null) {
-              out.put('480p', firstPlayable);
-              out.put('720p', firstPlayable);
-              out.put('1080p', firstPlayable);
-              log('PATCH_APPLIED canonical fallback map size=' + out.size() + ' actualQuality=' + firstPlayable.getQuality());
-            } else if (out !== null && !out.isEmpty()) {
-              log('ORIGINAL_MAP_OK size=' + out.size());
-            } else {
-              log('NO_PLAYABLE_MOVIE_LIST');
-            }
-          } catch (e) { log('RUNTIME_DIAG_ERROR ' + e); }
-          return out;
-        };
-        installed = true;
-        log('HOOK_INSTALLED m6.g2$u.invoke(StartPlayVODResult) attempts=' + attempts);
-      } catch (e) {
-        if ((attempts % 20) === 0) log('WAITING_FOR_PROTECTED_DEX attempts=' + attempts + ' err=' + e);
-      }
-    });
-  }
-  setInterval(attempt, 500);
-  attempt();
-})();
-JS
+# Make a temporary APK only so apktool disassembles runtime-019 as classes2.dex.
+cp "$BASE" "$WORK/probe.apk"
+cp "$RUNTIME_DEX" "$WORK/classes2.dex"
+(cd "$WORK" && zip -q -u probe.apk classes2.dex)
+java -jar "$APKTOOL" d -f "$WORK/probe.apk" -o "$WORK/probe-decoded" > "$OUT/probe-decode.txt" 2>&1
+TARGET=$(find "$WORK/probe-decoded" -type f -path '*/m6/g2$u.smali' | head -1)
+test -n "$TARGET"
+cp "$TARGET" "$OUT/g2-u-original.smali"
 
-for abi in arm64-v8a armeabi-v7a; do
-  target="$WORK/decoded/lib/$abi/libgadget.script.so"
-  test -f "$target"
-  cp "$WORK/vod-media-fallback.js" "$target"
-done
-
-java -jar "$APKTOOL" b "$WORK/decoded" -o "$WORK/unsigned.apk" > "$OUT/build.txt" 2>&1
-
-KEYSTORE="$WORK/test.jks"
-keytool -genkeypair -noprompt -keystore "$KEYSTORE" -storepass android -keypass android -alias androiddebugkey -dname 'CN=Xuper VOD Media Fallback,O=Android,C=MX' -keyalg RSA -keysize 2048 -validity 10000 >/dev/null 2>&1
-APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
-ZIPALIGN=$(find "$ANDROID_HOME/build-tools" -type f -name zipalign | sort -V | tail -1)
-"$ZIPALIGN" -f 4 "$WORK/unsigned.apk" "$WORK/aligned.apk"
-CANDIDATE="$OUT/Xuper-6.2.4-VOD-MediaFallback-Test.apk"
-"$APKSIGNER" sign --ks "$KEYSTORE" --ks-pass pass:android --key-pass pass:android --ks-key-alias androiddebugkey --out "$CANDIDATE" "$WORK/aligned.apk"
-"$APKSIGNER" verify --verbose --print-certs "$CANDIDATE" > "$OUT/signing.txt"
-checksum "$CANDIDATE" | tee "$OUT/candidate-sha256.txt"
-
-for abi in arm64-v8a armeabi-v7a; do
-  unzip -p "$CANDIDATE" "lib/$abi/libgadget.script.so" | grep -q 'HOOK_INSTALLED m6.g2\$u.invoke(StartPlayVODResult)'
-done
-
-echo 'BUILD_OK' | tee "$OUT/build-result.txt"
+echo 'STATIC_DEX_PROBE_OK' | tee "$OUT/build-result.txt"
