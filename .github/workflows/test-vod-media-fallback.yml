@@ -36,6 +36,37 @@ jobs:
           sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm
 
+      - name: Write Android 16 validation script
+        run: |
+          cat > /tmp/validate-vod-media.sh <<'BASH'
+          #!/usr/bin/env bash
+          set -euxo pipefail
+          OUT='diagnostics-vod-media-fallback'
+          APK="$OUT/Xuper-6.2.4-VOD-MediaFallback-Test.apk"
+          PKG='com.msandroid.mobile'
+          adb uninstall "$PKG" >/dev/null 2>&1 || true
+          adb install -g "$APK" | tee "$OUT/install.txt"
+          adb logcat -c
+          adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 > "$OUT/launch.txt" 2>&1 || true
+          sleep 20
+          PID20=$(adb shell pidof "$PKG" | tr -d '\r' || true)
+          adb exec-out screencap -p > "$OUT/screen-20.png" || true
+          sleep 40
+          PID60=$(adb shell pidof "$PKG" | tr -d '\r' || true)
+          adb exec-out screencap -p > "$OUT/screen-60.png" || true
+          adb logcat -d -v threadtime > "$OUT/logcat.txt" || true
+          echo "pid20=$PID20 pid60=$PID60" | tee "$OUT/runtime-result.txt"
+          test -n "$PID20"
+          test -n "$PID60"
+          if grep -Eqi 'FATAL EXCEPTION|UnsatisfiedLinkError|SIGABRT|Fatal signal' "$OUT/logcat.txt"; then
+            grep -Ein 'FATAL EXCEPTION|UnsatisfiedLinkError|SIGABRT|Fatal signal' "$OUT/logcat.txt" | tail -80
+            exit 70
+          fi
+          grep -Ei 'XUPER_VOD_MEDIA|frida|gadget' "$OUT/logcat.txt" | tail -250 > "$OUT/gadget-log.txt" || true
+          echo 'ANDROID16_STABILITY_OK' | tee -a "$OUT/runtime-result.txt"
+          BASH
+          chmod +x /tmp/validate-vod-media.sh
+
       - name: Validate install and 60s stability on Android 16
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -45,31 +76,7 @@ jobs:
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
-          script: |
-            set -euxo pipefail
-            OUT='diagnostics-vod-media-fallback'
-            APK="$OUT/Xuper-6.2.4-VOD-MediaFallback-Test.apk"
-            PKG='com.msandroid.mobile'
-            adb uninstall "$PKG" >/dev/null 2>&1 || true
-            adb install -g "$APK" | tee "$OUT/install.txt"
-            adb logcat -c
-            adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 > "$OUT/launch.txt" 2>&1 || true
-            sleep 20
-            PID20=$(adb shell pidof "$PKG" | tr -d '\r' || true)
-            adb exec-out screencap -p > "$OUT/screen-20.png" || true
-            sleep 40
-            PID60=$(adb shell pidof "$PKG" | tr -d '\r' || true)
-            adb exec-out screencap -p > "$OUT/screen-60.png" || true
-            adb logcat -d -v threadtime > "$OUT/logcat.txt" || true
-            echo "pid20=$PID20 pid60=$PID60" | tee "$OUT/runtime-result.txt"
-            test -n "$PID20"
-            test -n "$PID60"
-            if grep -Eqi 'FATAL EXCEPTION|UnsatisfiedLinkError|SIGABRT|Fatal signal' "$OUT/logcat.txt"; then
-              grep -Ein 'FATAL EXCEPTION|UnsatisfiedLinkError|SIGABRT|Fatal signal' "$OUT/logcat.txt" | tail -80
-              exit 70
-            fi
-            grep -Ei 'XUPER_VOD_MEDIA|frida|gadget' "$OUT/logcat.txt" | tail -250 > "$OUT/gadget-log.txt" || true
-            echo 'ANDROID16_STABILITY_OK' | tee -a "$OUT/runtime-result.txt"
+          script: bash /tmp/validate-vod-media.sh
 
       - name: Upload candidate and diagnostics
         if: always()
