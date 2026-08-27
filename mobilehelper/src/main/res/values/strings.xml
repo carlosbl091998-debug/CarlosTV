@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Xuper Móvil</string>
+    <string name="accessibility_description">Muestra un control táctil sobre Xuper para navegar su interfaz de TV desde un teléfono.</string>
+</resources>
