@@ -1,0 +1,131 @@
+name: Test VOD authType override
+on:
+  workflow_dispatch:
+  push:
+    branches: [magis-vod-runtime-dex-stable]
+    paths: ['.github/workflows/test-vod-authtype-override.yml']
+jobs:
+  build-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      PKG: com.msandroid.mobile
+      BASE_SHA256: 8ba6eb4a13bdec2d8d8ab06a1502194f488ce58d9fb6de7feeb1c539ef0f7b4e
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with: {distribution: temurin, java-version: '17'}
+      - uses: android-actions/setup-android@v3
+      - name: Install Android build tools
+        run: |
+          set -euo pipefail
+          sdkmanager 'build-tools;35.0.0' 'platforms;android-35' >/dev/null
+          echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
+      - name: Recover exact stable APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/base diagnostics
+          curl -fL -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            https://api.github.com/repos/carlosbl091998-debug/CarlosTV/actions/artifacts/9623417943/zip -o /tmp/base.zip
+          unzip -q /tmp/base.zip -d /tmp/base
+          BASE=''
+          while IFS= read -r f; do
+            [ "$(sha256sum "$f" | awk '{print $1}')" = "$BASE_SHA256" ] && BASE="$f" && break
+          done < <(find /tmp/base -type f -name '*.apk')
+          test -n "$BASE"; cp "$BASE" stable.apk
+          sha256sum stable.apk | tee diagnostics/stable-sha.txt
+      - name: Build minimal StartPlayVODBean override DEX
+        run: |
+          set -euo pipefail
+          mkdir -p src/mobile/com/requestframe/utils/bean classes dexout
+          cat > src/mobile/com/requestframe/utils/bean/StartPlayVODBean.java <<'JAVA'
+          package mobile.com.requestframe.utils.bean;
+          import java.util.Arrays;
+          import java.util.Objects;
+          public final class StartPlayVODBean {
+            private String authType;
+            private Integer columnId;
+            private String contentId;
+            private int[] episodeNumberList;
+            private String portalCode;
+            private String seriesContentId;
+            private int startTime;
+            private String type;
+            private String userId;
+            private String userToken;
+            public StartPlayVODBean(String userToken,String userId,String portalCode,String authType,int[] episodeNumberList,String type,Integer columnId,String contentId,String seriesContentId,int startTime){
+              if(userToken==null||userId==null||portalCode==null||type==null||contentId==null) throw new NullPointerException();
+              this.userToken=userToken; this.userId=userId; this.portalCode=portalCode;
+              this.authType=(authType==null||authType.length()==0)?"1":authType;
+              this.episodeNumberList=episodeNumberList; this.type=type; this.columnId=columnId; this.contentId=contentId; this.seriesContentId=seriesContentId; this.startTime=startTime;
+            }
+            public String component1(){return userToken;} public int component10(){return startTime;} public String component2(){return userId;} public String component3(){return portalCode;} public String component4(){return authType;} public int[] component5(){return episodeNumberList;} public String component6(){return type;} public Integer component7(){return columnId;} public String component8(){return contentId;} public String component9(){return seriesContentId;}
+            public StartPlayVODBean copy(String a,String b,String c,String d,int[] e,String f,Integer g,String h,String i,int j){return new StartPlayVODBean(a,b,c,d,e,f,g,h,i,j);}
+            public String getAuthType(){return authType;} public Integer getColumnId(){return columnId;} public String getContentId(){return contentId;} public int[] getEpisodeNumberList(){return episodeNumberList;} public String getPortalCode(){return portalCode;} public String getSeriesContentId(){return seriesContentId;} public int getStartTime(){return startTime;} public String getType(){return type;} public String getUserId(){return userId;} public String getUserToken(){return userToken;}
+            public void setAuthType(String v){authType=(v==null||v.length()==0)?"1":v;} public void setColumnId(Integer v){columnId=v;} public void setContentId(String v){if(v==null)throw new NullPointerException();contentId=v;} public void setEpisodeNumberList(int[] v){episodeNumberList=v;} public void setPortalCode(String v){if(v==null)throw new NullPointerException();portalCode=v;} public void setSeriesContentId(String v){seriesContentId=v;} public void setStartTime(int v){startTime=v;} public void setType(String v){if(v==null)throw new NullPointerException();type=v;} public void setUserId(String v){if(v==null)throw new NullPointerException();userId=v;} public void setUserToken(String v){if(v==null)throw new NullPointerException();userToken=v;}
+            @Override public boolean equals(Object o){if(this==o)return true;if(!(o instanceof StartPlayVODBean))return false;StartPlayVODBean x=(StartPlayVODBean)o;return startTime==x.startTime&&Objects.equals(userToken,x.userToken)&&Objects.equals(userId,x.userId)&&Objects.equals(portalCode,x.portalCode)&&Objects.equals(authType,x.authType)&&Arrays.equals(episodeNumberList,x.episodeNumberList)&&Objects.equals(type,x.type)&&Objects.equals(columnId,x.columnId)&&Objects.equals(contentId,x.contentId)&&Objects.equals(seriesContentId,x.seriesContentId);}
+            @Override public int hashCode(){int r=Objects.hash(userToken,userId,portalCode,authType,type,columnId,contentId,seriesContentId,startTime);return 31*r+Arrays.hashCode(episodeNumberList);}
+            @Override public String toString(){return "StartPlayVODBean(userToken="+userToken+", userId="+userId+", portalCode="+portalCode+", authType="+authType+", episodeNumberList="+Arrays.toString(episodeNumberList)+", type="+type+", columnId="+columnId+", contentId="+contentId+", seriesContentId="+seriesContentId+", startTime="+startTime+")";}
+          }
+          JAVA
+          javac -source 8 -target 8 -d classes src/mobile/com/requestframe/utils/bean/StartPlayVODBean.java
+          d8 --min-api 21 --output dexout classes/mobile/com/requestframe/utils/bean/StartPlayVODBean.class
+          test -s dexout/classes.dex
+          strings dexout/classes.dex | grep -q 'StartPlayVODBean'
+          strings dexout/classes.dex | grep -x '1' >/dev/null || true
+          sha256sum dexout/classes.dex | tee diagnostics/override-dex-sha.txt
+      - name: Package and sign candidate
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import zipfile
+          src='stable.apk'; out='candidate-unsigned.apk'; payload=open('dexout/classes.dex','rb').read()
+          with zipfile.ZipFile(src) as zin, zipfile.ZipFile(out,'w',allowZip64=True) as zout:
+            for it in zin.infolist():
+              if it.filename.startswith('META-INF/') or it.filename=='classes2.dex': continue
+              d=zin.read(it.filename); ni=zipfile.ZipInfo(it.filename,it.date_time); ni.compress_type=it.compress_type; ni.comment=it.comment; ni.extra=it.extra; ni.internal_attr=it.internal_attr; ni.external_attr=it.external_attr; ni.create_system=it.create_system; zout.writestr(ni,d)
+            ni=zipfile.ZipInfo('classes2.dex'); ni.compress_type=zipfile.ZIP_DEFLATED; zout.writestr(ni,payload)
+          PY
+          zipalign -P 16 -f 4 candidate-unsigned.apk candidate-aligned.apk
+          keytool -genkeypair -keystore /tmp/key.jks -storepass android -keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Android Debug,O=Android,C=US' >/dev/null 2>&1
+          apksigner sign --ks /tmp/key.jks --ks-pass pass:android --key-pass pass:android --out Magis-stable-VOD-authType1.apk candidate-aligned.apk
+          apksigner verify --verbose Magis-stable-VOD-authType1.apk | tee diagnostics/signature.txt
+          unzip -t Magis-stable-VOD-authType1.apk | tail -2 | tee diagnostics/zip-test.txt
+          for f in classes.dex resources.arsc lib/arm64-v8a/libijkplayer.so lib/arm64-v8a/libijkffmpeg.so lib/arm64-v8a/libijksdl.so; do
+            a=$(unzip -p stable.apk "$f" | sha256sum | awk '{print $1}'); b=$(unzip -p Magis-stable-VOD-authType1.apk "$f" | sha256sum | awk '{print $1}'); echo "$f stable=$a candidate=$b" | tee -a diagnostics/invariants.txt; test "$a" = "$b";
+          done
+          sha256sum Magis-stable-VOD-authType1.apk | tee diagnostics/candidate-sha.txt
+      - name: Write strict liveness test
+        run: |
+          cat > diagnostics/test.sh <<'BASH'
+          #!/usr/bin/env bash
+          set -u
+          test_one(){ n="$1"; a="$2"; mkdir -p "diagnostics/$n"; adb uninstall "$PKG" >/dev/null 2>&1||true; adb install -g "$a"|tee "diagnostics/$n/install.txt"; grep -q Success "diagnostics/$n/install.txt"||return 2; adb logcat -c; adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >"diagnostics/$n/launch.txt" 2>&1||true; sleep 8; adb shell pidof "$PKG"|tr -d '\r' >"diagnostics/$n/pid8.txt"||true; sleep 12; adb shell pidof "$PKG"|tr -d '\r' >"diagnostics/$n/pid20.txt"||true; adb logcat -d -v threadtime >"diagnostics/$n/logcat.txt"||true; adb logcat -b crash -d -v threadtime >"diagnostics/$n/crash.txt"||true; [ -s "diagnostics/$n/pid8.txt" ]&&[ -s "diagnostics/$n/pid20.txt" ]; }
+          s=0;c=0; test_one stable stable.apk||s=$?; test_one candidate Magis-stable-VOD-authType1.apk||c=$?; echo "stable_rc=$s candidate_rc=$c"|tee diagnostics/summary.txt; [ "$s" -eq 0 ]&&[ "$c" -eq 0 ]
+          BASH
+          chmod +x diagnostics/test.sh; bash -n diagnostics/test.sh
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"'|sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules; sudo udevadm trigger --name-match=kvm
+      - name: Android 16 stable vs authType override
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          script: bash diagnostics/test.sh
+      - name: Upload candidate and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stable-vod-authtype1-validation
+          path: |
+            Magis-stable-VOD-authType1.apk
+            diagnostics/**
+          retention-days: 7
