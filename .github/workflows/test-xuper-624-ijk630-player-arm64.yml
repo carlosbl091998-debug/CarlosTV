@@ -65,22 +65,28 @@ jobs:
           set -euo pipefail
           test "$(find donors/ijk630 -maxdepth 1 -name 'part-*.b64' | wc -l)" -eq 6
           python3 - <<'PY'
-          import base64, glob, hashlib, pathlib, sys
+          import base64, glob, hashlib, pathlib
           parts=sorted(glob.glob('donors/ijk630/part-*.b64'))
           if len(parts) != 6:
               raise SystemExit(f'expected 6 donor parts, got {len(parts)}')
-          text=''.join(pathlib.Path(p).read_text().strip() for p in parts)
-          try:
-              blob=base64.b64decode(text, validate=True)
-          except Exception as e:
-              raise SystemExit(f'base64 donor decode failed: {e}')
+          decoded=[]
+          for p in parts:
+              text=''.join(pathlib.Path(p).read_text().split())
+              try:
+                  data=base64.b64decode(text, validate=True)
+              except Exception as e:
+                  raise SystemExit(f'{p}: base64 decode failed: {e}')
+              decoded.append(data)
+              print(p, 'b64=', len(text), 'bytes=', len(data), 'sha=', hashlib.sha256(data).hexdigest())
+          blob=b''.join(decoded)
           pathlib.Path('/tmp/libijkplayer-630.so.xz').write_bytes(blob)
           print('DONOR_PARTS=', len(parts))
-          print('DONOR_B64_CHARS=', len(text))
+          print('PLAYER_XZ_BYTES=', len(blob))
           print('PLAYER_XZ_SHA=', hashlib.sha256(blob).hexdigest())
           PY
           XZ_SHA=$(sha256sum /tmp/libijkplayer-630.so.xz | awk '{print $1}')
           test "$XZ_SHA" = "$PLAYER630_XZ_SHA256"
+          xz -t /tmp/libijkplayer-630.so.xz
           xz -dc /tmp/libijkplayer-630.so.xz > libijkplayer-630.so
           PLAYER_SHA=$(sha256sum libijkplayer-630.so | awk '{print $1}')
           echo "PLAYER_SHA=$PLAYER_SHA"
