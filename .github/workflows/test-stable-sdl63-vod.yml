@@ -1,0 +1,168 @@
+name: Test stable SDL 6.3 VOD candidate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [magis-vod-stable-sdl63-validation]
+    paths:
+      - '.github/workflows/test-stable-sdl63-vod.yml'
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PKG: com.msandroid.mobile
+      BASE_SHA256: 8ba6eb4a13bdec2d8d8ab06a1502194f488ce58d9fb6de7feeb1c539ef0f7b4e
+      SDL_SHA256: 2257b00c4969e6f8aaed5751e997b83921ebf91d24b9d75bfe7dd14df2be150a
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android build tools
+        run: |
+          set -euo pipefail
+          sdkmanager 'build-tools;35.0.0' >/dev/null
+          echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
+
+      - name: Recover stable APK and SDL 6.3
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/base /tmp/donor diagnostics
+          curl -fL --retry 4 --retry-all-errors \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            'https://api.github.com/repos/carlosbl091998-debug/CarlosTV/actions/artifacts/9623417943/zip' -o /tmp/base.zip
+          unzip -q /tmp/base.zip -d /tmp/base
+          BASE=''
+          while IFS= read -r f; do
+            sha=$(sha256sum "$f" | awk '{print $1}')
+            if [ "$sha" = "$BASE_SHA256" ]; then BASE="$f"; break; fi
+          done < <(find /tmp/base -type f -name '*.apk' -print)
+          test -n "$BASE"
+          cp "$BASE" stable.apk
+
+          curl -fL --retry 4 --retry-all-errors \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            'https://api.github.com/repos/carlosbl091998-debug/CarlosTV/actions/artifacts/9632074487/zip' -o /tmp/donor.zip
+          unzip -q /tmp/donor.zip -d /tmp/donor
+          cp /tmp/donor/libijksdl.so libijksdl-63.so
+          test "$(sha256sum libijksdl-63.so | awk '{print $1}')" = "$SDL_SHA256"
+          file libijksdl-63.so | tee diagnostics/sdl-file.txt
+          readelf -d libijksdl-63.so | grep NEEDED | tee diagnostics/sdl-needed.txt || true
+
+      - name: Build signed SDL-only candidate
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import zipfile
+          src='stable.apk'; out='candidate-unsigned.apk'
+          target='lib/arm64-v8a/libijksdl.so'
+          data=open('libijksdl-63.so','rb').read()
+          with zipfile.ZipFile(src) as zin, zipfile.ZipFile(out,'w',allowZip64=True) as zout:
+            for item in zin.infolist():
+              if item.filename.startswith('META-INF/') or item.filename == target:
+                continue
+              payload=zin.read(item.filename)
+              ni=zipfile.ZipInfo(item.filename,item.date_time)
+              ni.compress_type=item.compress_type
+              ni.comment=item.comment; ni.extra=item.extra
+              ni.internal_attr=item.internal_attr; ni.external_attr=item.external_attr
+              ni.create_system=item.create_system
+              zout.writestr(ni,payload)
+            ni=zipfile.ZipInfo(target)
+            ni.compress_type=zipfile.ZIP_STORED
+            ni.external_attr=0o100755 << 16
+            zout.writestr(ni,data)
+          PY
+          zipalign -P 16 -f 4 candidate-unsigned.apk candidate-aligned.apk
+          keytool -genkeypair -keystore /tmp/test.keystore -storepass android -keypass android \
+            -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname 'CN=Android Debug,O=Android,C=US' >/dev/null 2>&1
+          apksigner sign --ks /tmp/test.keystore --ks-pass pass:android --key-pass pass:android \
+            --out Magis-stable-SDL63-vod-candidate.apk candidate-aligned.apk
+          apksigner verify --verbose Magis-stable-SDL63-vod-candidate.apk | tee diagnostics/signature.txt
+          unzip -t Magis-stable-SDL63-vod-candidate.apk | tail -2 | tee diagnostics/zip-test.txt
+          for f in classes.dex resources.arsc; do
+            a=$(unzip -p stable.apk "$f" | sha256sum | awk '{print $1}')
+            b=$(unzip -p Magis-stable-SDL63-vod-candidate.apk "$f" | sha256sum | awk '{print $1}')
+            echo "$f stable=$a candidate=$b" | tee -a diagnostics/invariants.txt
+            test "$a" = "$b"
+          done
+          for f in libijkplayer.so libijkffmpeg.so; do
+            a=$(unzip -p stable.apk "lib/arm64-v8a/$f" | sha256sum | awk '{print $1}')
+            b=$(unzip -p Magis-stable-SDL63-vod-candidate.apk "lib/arm64-v8a/$f" | sha256sum | awk '{print $1}')
+            echo "$f stable=$a candidate=$b" | tee -a diagnostics/invariants.txt
+            test "$a" = "$b"
+          done
+          sha256sum stable.apk Magis-stable-SDL63-vod-candidate.apk | tee diagnostics/apk-sha256.txt
+
+      - name: Write liveness test script
+        run: |
+          cat > diagnostics/run-tests.sh <<'BASH'
+          #!/usr/bin/env bash
+          set -u
+          test_one() {
+            name="$1"; apk="$2"
+            mkdir -p "diagnostics/$name"
+            adb uninstall "$PKG" >/dev/null 2>&1 || true
+            adb install -g "$apk" | tee "diagnostics/$name/install.txt"
+            if ! grep -q Success "diagnostics/$name/install.txt"; then
+              echo INSTALL_FAIL > "diagnostics/$name/result.txt"; return 1
+            fi
+            adb logcat -c
+            adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >"diagnostics/$name/monkey.txt" 2>&1 || true
+            sleep 8
+            adb shell pidof "$PKG" | tr -d '\r' > "diagnostics/$name/pid8.txt" || true
+            sleep 12
+            adb shell pidof "$PKG" | tr -d '\r' > "diagnostics/$name/pid20.txt" || true
+            adb logcat -d -v threadtime > "diagnostics/$name/logcat.txt" || true
+            adb logcat -b crash -d -v threadtime > "diagnostics/$name/crash.txt" || true
+            if [ -s "diagnostics/$name/pid8.txt" ] && [ -s "diagnostics/$name/pid20.txt" ]; then
+              echo PASS > "diagnostics/$name/result.txt"; return 0
+            fi
+            echo FAIL > "diagnostics/$name/result.txt"; return 1
+          }
+          stable_rc=0; candidate_rc=0
+          test_one stable stable.apk || stable_rc=$?
+          test_one candidate Magis-stable-SDL63-vod-candidate.apk || candidate_rc=$?
+          echo "stable_rc=$stable_rc candidate_rc=$candidate_rc" | tee diagnostics/summary.txt
+          [ "$stable_rc" -eq 0 ] && [ "$candidate_rc" -eq 0 ]
+          BASH
+          chmod +x diagnostics/run-tests.sh
+          bash -n diagnostics/run-tests.sh
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Android 16 stable control vs SDL-only candidate
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          script: bash diagnostics/run-tests.sh
+
+      - name: Upload candidate and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stable-sdl63-vod-validation
+          path: |
+            Magis-stable-SDL63-vod-candidate.apk
+            diagnostics/**
+          retention-days: 7
