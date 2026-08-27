@@ -16,6 +16,7 @@ jobs:
       PKG: com.msandroid.mobile
       DONOR_URL: https://magisapktv.com/files/magis-celular-magisapktv.com.apk
       DONOR_SHA256: d4edfc8ee9fbc008f9daa2cbb3aac733939987b7570bfc58a7065ebecfaa510a
+      BASE_SHA256: 8ba6eb4a13bdec2d8d8ab06a1502194f488ce58d9fb6de7feeb1c539ef0f7b4e
     steps:
       - uses: actions/checkout@v4
 
@@ -47,11 +48,19 @@ jobs:
             'https://api.github.com/repos/carlosbl091998-debug/CarlosTV/actions/artifacts/9621536337/zip' \
             -o /tmp/base.zip
           unzip -q /tmp/base.zip -d /tmp/base
-          BASE=$(find /tmp/base -type f -name '*.apk' | head -1)
+          BASE=''
+          while IFS= read -r candidate; do
+            sha=$(sha256sum "$candidate" | awk '{print $1}')
+            echo "candidate=$candidate sha=$sha"
+            if [ "$sha" = "$BASE_SHA256" ]; then
+              BASE="$candidate"
+              break
+            fi
+          done < <(find /tmp/base -type f -name '*.apk' -print)
           test -n "$BASE"
           cp "$BASE" stable-624.apk
           echo "BASE_SHA=$(sha256sum stable-624.apk | awk '{print $1}')"
-          test "$(sha256sum stable-624.apk | awk '{print $1}')" = '8ba6eb4a13bdec2d8d8ab06a1502194f488ce58d9fb6de7feeb1c539ef0f7b4e'
+          test "$(sha256sum stable-624.apk | awk '{print $1}')" = "$BASE_SHA256"
 
       - name: Download and verify exact 6.3 donor
         shell: bash
