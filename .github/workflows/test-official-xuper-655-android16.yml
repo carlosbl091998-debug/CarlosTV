@@ -21,39 +21,91 @@ jobs:
           java-version: '17'
       - uses: android-actions/setup-android@v3
 
-      - name: Resolve community-listed mobile 6.5.5 installer
+      - name: Resolve AFTV redirect and public Gofile folder
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p out
-          URL='https://aftvnews.com/3154861'
-          UA='Mozilla/5.0 (Linux; Android 16; Pixel 6) AppleWebKit/537.36 Chrome/140 Mobile Safari/537.36'
-          curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 180 -A "$UA" "$URL" -o /tmp/xuper.bin
-          if ! unzip -t /tmp/xuper.bin >/dev/null 2>&1; then
-            python3 - <<'PY'
-          import html,re
-          raw=open('/tmp/xuper.bin','rb').read(3000000).decode('utf-8','ignore')
-          raw=html.unescape(raw).replace('\\/','/')
-          urls=[]
-          pats=[
-            r'https?://[^\"\'<>\s]+?\.apk(?:\?[^\"\'<>\s]*)?',
-            r'https?://[^\"\'<>\s]+?/download[^\"\'<>\s]*',
-            r'https?://[^\"\'<>\s]+?/(?:file|files)/[^\"\'<>\s]+'
-          ]
-          for pat in pats:
-              urls += re.findall(pat,raw,re.I)
-          urls=[u.rstrip(');,') for u in urls if '3154861' not in u or 'aftvnews.com' not in u]
-          if not urls:
+          python3 - <<'PY'
+          import hashlib, html, json, os, re, sys, time
+          import requests
+
+          aftv='https://aftvnews.com/3154861'
+          ua='Mozilla/5.0 (Linux; Android 16; Pixel 6) AppleWebKit/537.36 Chrome/140 Mobile Safari/537.36'
+          s=requests.Session()
+          s.headers.update({'User-Agent':ua})
+
+          r=s.get(aftv,timeout=30)
+          r.raise_for_status()
+          raw=html.unescape(r.text).replace('\\/','/')
+          m=re.search(r'https://gofile\.io/d/([A-Za-z0-9]+)',raw,re.I)
+          if not m:
               open('out/landing-preview.txt','w').write(raw[:100000])
-              raise SystemExit('No APK/download URL found in AFTV landing response')
-          open('/tmp/discovered-url.txt','w').write(urls[0])
+              raise SystemExit('AFTV page did not contain a Gofile folder URL')
+          code=m.group(1)
+
+          def website_token(account_token=''):
+              slot=int(time.time())//14400
+              material=f'{ua}::en-US::{account_token}::{slot}::12af056dacea0b'
+              return hashlib.sha256(material.encode()).hexdigest()
+
+          ar=s.post('https://api.gofile.io/accounts',headers={
+              'X-Website-Token':website_token(''),
+              'X-BL':'en-US'
+          },timeout=30)
+          ar.raise_for_status()
+          aj=ar.json()
+          if aj.get('status')!='ok' or not aj.get('data',{}).get('token'):
+              raise SystemExit(f'Gofile guest account creation failed: {aj.get("status")}')
+          token=aj['data']['token']
+          s.headers.update({'Authorization':f'Bearer {token}'})
+
+          files=[]
+          seen=set()
+          def walk(content_id):
+              if content_id in seen: return
+              seen.add(content_id)
+              rr=s.get(f'https://api.gofile.io/contents/{content_id}?cache=true&sortField=createTime&sortDirection=1',headers={
+                  'X-Website-Token':website_token(token),
+                  'X-BL':'en-US'
+              },timeout=30)
+              rr.raise_for_status()
+              jj=rr.json()
+              if jj.get('status')!='ok':
+                  raise RuntimeError(f'Gofile content lookup failed for {content_id}: {jj.get("status")}')
+              data=jj.get('data',{})
+              children=data.get('children') or {}
+              if isinstance(children,list):
+                  iterable=children
+              else:
+                  iterable=children.values()
+              for child in iterable:
+                  if child.get('type')=='folder':
+                      walk(child['id'])
+                  elif child.get('type')=='file':
+                      files.append(child)
+          walk(code)
+
+          apks=[f for f in files if str(f.get('name','')).lower().endswith('.apk') and f.get('link')]
+          if not apks:
+              open('out/gofile-file-list.txt','w').write('\n'.join(str(f.get('name','')) for f in files))
+              raise SystemExit('No APK found in Gofile folder')
+          apks.sort(key=lambda f:int(f.get('size') or 0), reverse=True)
+          f=apks[0]
+          name=str(f.get('name'))
+          link=str(f.get('link'))
+          size=int(f.get('size') or 0)
+          with s.get(link,stream=True,timeout=60) as dr:
+              dr.raise_for_status()
+              with open('/tmp/xuper.bin','wb') as out:
+                  for chunk in dr.iter_content(1024*1024):
+                      if chunk: out.write(chunk)
+          actual=os.path.getsize('/tmp/xuper.bin')
+          if size and actual != size:
+              raise SystemExit(f'Gofile size mismatch: expected {size}, got {actual}')
+          with open('out/source.txt','w') as o:
+              o.write(f'AFTV_CODE=3154861\nGOFILE_FOLDER={code}\nFILE_NAME={name}\nFILE_SIZE={actual}\n')
           PY
-            U="$(cat /tmp/discovered-url.txt)"
-            echo "DISCOVERED_HOST=$(python3 -c 'import urllib.parse,sys;print(urllib.parse.urlsplit(sys.argv[1]).netloc)' "$U")" | tee out/source.txt
-            curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 180 -A "$UA" -e "$URL" "$U" -o /tmp/xuper.bin
-          else
-            echo 'DIRECT_APK=1' | tee out/source.txt
-          fi
           unzip -t /tmp/xuper.bin >/dev/null
           cp /tmp/xuper.bin out/Xuper-6.5.5-candidate.apk
           sha256sum out/Xuper-6.5.5-candidate.apk | tee out/sha256.txt
