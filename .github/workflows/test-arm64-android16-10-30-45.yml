@@ -9,8 +9,8 @@ on:
 
 jobs:
   arm64-test:
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 45
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     env:
       ARTIFACT_ID: '9633216673'
       PACKAGE: com.msandroid.mobile
@@ -32,7 +32,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mkdir -p incoming
+          mkdir -p incoming diagnostics
           curl -fL --retry 4 --retry-all-errors \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H 'Accept: application/vnd.github+json' \
@@ -54,19 +54,19 @@ jobs:
             -d pixel_6 \
             --force
 
-      - name: Start ARM64 emulator
+      - name: Start ARM64 emulator through software translation
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p diagnostics
           nohup emulator -avd arm64_api36 \
+            -accel off \
             -no-window -noaudio -no-boot-anim \
             -no-snapshot -gpu swiftshader_indirect \
             -camera-back none -camera-front none \
             > diagnostics/emulator.txt 2>&1 &
           echo $! > diagnostics/emulator.pid
           adb wait-for-device
-          for i in $(seq 1 180); do
+          for i in $(seq 1 300); do
             BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
             [ "$BOOT" = '1' ] && break
             sleep 2
@@ -83,7 +83,6 @@ jobs:
         continue-on-error: true
         run: |
           set +e
-          mkdir -p diagnostics
           adb uninstall "$PACKAGE" >/dev/null 2>&1 || true
           adb install -g candidate.apk > diagnostics/install.txt 2>&1
           INSTALL_RC=$?
@@ -114,7 +113,8 @@ jobs:
         shell: bash
         run: |
           set +e
-          adb logcat -d -v threadtime > diagnostics/logcat-full.txt 2>&1
+          mkdir -p diagnostics
+          adb logcat -d -v threadtime > diagnostics/logcat-full.txt 2>&1 || true
           grep -Eai 'FATAL EXCEPTION|AndroidRuntime|SIGSEGV|signal 11|tombstone|UnsatisfiedLinkError|dlopen failed|linker|ijk|ffmpeg|libsdl|DEBUG' diagnostics/logcat-full.txt > diagnostics/logcat-crash.txt || true
           adb shell dumpsys activity activities > diagnostics/activities.txt 2>&1 || true
           adb shell dumpsys package "$PACKAGE" > diagnostics/package.txt 2>&1 || true
