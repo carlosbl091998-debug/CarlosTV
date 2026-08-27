@@ -4,8 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths:
-      - '.github/workflows/test-xuper-624-ijk630-player-sdl-arm64.yml'
+    paths: ['.github/workflows/test-xuper-624-ijk630-player-sdl-arm64.yml']
 
 jobs:
   build-test:
@@ -57,8 +56,7 @@ jobs:
           xs=[]
           for i,p in enumerate(parts):
               s=''.join(pathlib.Path(p).read_text().split())
-              if i==12:
-                  s=s.replace('Fq82xlKlbs2Ev','Fq82xlKpbs2Ev',1)
+              if i==12: s=s.replace('Fq82xlKlbs2Ev','Fq82xlKpbs2Ev',1)
               xs.append(s)
           blob=base64.b64decode(''.join(xs),validate=True)
           pathlib.Path('/tmp/player.xz').write_bytes(blob)
@@ -74,9 +72,8 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           import zipfile
-          src='stable-624.apk'; out='hybrid-unsigned.apk'
           repl={'lib/arm64-v8a/libijkplayer.so':open('libijkplayer-630.so','rb').read(),'lib/arm64-v8a/libijksdl.so':open('libijksdl-630.so','rb').read()}
-          with zipfile.ZipFile(src) as z, zipfile.ZipFile(out,'w',allowZip64=True) as o:
+          with zipfile.ZipFile('stable-624.apk') as z, zipfile.ZipFile('hybrid-unsigned.apk','w',allowZip64=True) as o:
               for it in z.infolist():
                   if it.filename.startswith('META-INF/') or it.filename in repl: continue
                   d=z.read(it.filename); n=zipfile.ZipInfo(it.filename,it.date_time); n.compress_type=it.compress_type; n.comment=it.comment; n.extra=it.extra; n.internal_attr=it.internal_attr; n.external_attr=it.external_attr; n.create_system=it.create_system; o.writestr(n,d)
@@ -108,21 +105,22 @@ jobs:
           script: |
             mkdir -p diagnostics
             adb uninstall com.msandroid.mobile >/dev/null 2>&1 || true
-            adb install -g Xuper-6.2.4-IJK630-Player-SDL-arm64.apk | tee diagnostics/install.txt
-            grep -q Success diagnostics/install.txt
-            adb logcat -c
-            adb shell monkey -p com.msandroid.mobile -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+            adb install -g Xuper-6.2.4-IJK630-Player-SDL-arm64.apk > diagnostics/install.txt 2>&1 || true
+            adb logcat -c || true
+            adb shell monkey -p com.msandroid.mobile -c android.intent.category.LAUNCHER 1 > diagnostics/monkey.txt 2>&1 || true
             sleep 8
-            adb shell pidof com.msandroid.mobile | tr -d '\r[:space:]' | tee diagnostics/pid8.txt; test -s diagnostics/pid8.txt
+            adb shell pidof com.msandroid.mobile > diagnostics/pid8.txt 2>&1 || true
             sleep 12
-            adb shell pidof com.msandroid.mobile | tr -d '\r[:space:]' | tee diagnostics/pid20.txt; test -s diagnostics/pid20.txt
-            adb logcat -d -v threadtime | grep -Eai 'FATAL EXCEPTION|AndroidRuntime|UnsatisfiedLinkError|dlopen failed|linker|ijk|ffmpeg' | tail -500 > diagnostics/runtime.txt || true
-            echo PASS | tee diagnostics/result.txt
-      - name: Upload candidate
-        if: success()
+            adb shell pidof com.msandroid.mobile > diagnostics/pid20.txt 2>&1 || true
+            adb shell dumpsys activity activities > diagnostics/activity.txt 2>&1 || true
+            adb logcat -d -v threadtime > diagnostics/logcat-full.txt 2>&1 || true
+            grep -Eai 'FATAL EXCEPTION|AndroidRuntime|UnsatisfiedLinkError|dlopen failed|linker|ijk|ffmpeg|INSTALL_FAILED' diagnostics/logcat-full.txt | tail -700 > diagnostics/runtime.txt || true
+            grep -q Success diagnostics/install.txt && test -s diagnostics/pid8.txt && test -s diagnostics/pid20.txt
+      - name: Upload diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: xuper-624-ijk630-player-sdl-arm64-tested
+          name: xuper-624-ijk630-player-sdl-arm64-diagnostics
           path: |
             Xuper-6.2.4-IJK630-Player-SDL-arm64.apk
             signature.txt
