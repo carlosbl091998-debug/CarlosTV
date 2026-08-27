@@ -1,0 +1,162 @@
+name: Trace stable VOD runtime DEX
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [magis-vod-runtime-dex-stable]
+    paths: ['.github/workflows/trace-stable-vod-runtime.yml']
+
+jobs:
+  trace:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PKG: com.msandroid.mobile
+      BASE_SHA256: 8ba6eb4a13bdec2d8d8ab06a1502194f488ce58d9fb6de7feeb1c539ef0f7b4e
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+
+      - name: Recover exact stable APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/base diagnostics
+          curl -fL --retry 4 --retry-all-errors \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            'https://api.github.com/repos/carlosbl091998-debug/CarlosTV/actions/artifacts/9623417943/zip' -o /tmp/base.zip
+          unzip -q /tmp/base.zip -d /tmp/base
+          BASE=''
+          while IFS= read -r f; do
+            sha=$(sha256sum "$f" | awk '{print $1}')
+            if [ "$sha" = "$BASE_SHA256" ]; then BASE="$f"; break; fi
+          done < <(find /tmp/base -type f -name '*.apk' -print)
+          test -n "$BASE"
+          cp "$BASE" stable.apk
+          sha256sum stable.apk | tee diagnostics/stable-sha256.txt
+
+      - name: Install Frida tools
+        run: |
+          python -m pip install --user 'frida==17.2.17' 'frida-tools==14.4.5' frida-dexdump
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Write runtime trace script
+        run: |
+          cat > diagnostics/trace.sh <<'BASH'
+          #!/usr/bin/env bash
+          set -uo pipefail
+          mkdir -p diagnostics/dex-early diagnostics/dex-late diagnostics/dex-all diagnostics/jadx
+          adb root || true
+          adb wait-for-device
+          adb uninstall "$PKG" >/dev/null 2>&1 || true
+          adb install -g stable.apk | tee diagnostics/install.txt
+          grep -q Success diagnostics/install.txt || exit 10
+          # Pre-grant common runtime permissions so Android permission UI does not own foreground.
+          for p in android.permission.CAMERA android.permission.POST_NOTIFICATIONS android.permission.READ_MEDIA_IMAGES android.permission.READ_MEDIA_AUDIO; do
+            adb shell pm grant "$PKG" "$p" >/dev/null 2>&1 || true
+          done
+          adb shell appops set "$PKG" MANAGE_EXTERNAL_STORAGE allow >/dev/null 2>&1 || true
+
+          curl -fL --retry 3 --retry-all-errors \
+            https://github.com/frida/frida/releases/download/17.2.17/frida-server-17.2.17-android-x86_64.xz \
+            -o /tmp/frida-server.xz
+          xz -dc /tmp/frida-server.xz > /tmp/frida-server
+          chmod +x /tmp/frida-server
+          adb push /tmp/frida-server /data/local/tmp/frida-server >/dev/null
+          adb shell chmod 755 /data/local/tmp/frida-server
+          adb shell 'pkill -9 frida-server || true; nohup /data/local/tmp/frida-server >/data/local/tmp/frida.log 2>&1 &' || true
+          sleep 3
+
+          adb shell am force-stop "$PKG" || true
+          adb logcat -c || true
+          adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 > diagnostics/launch.txt 2>&1 || true
+          PID=''
+          for i in $(seq 1 30); do
+            PID=$(adb shell pidof "$PKG" 2>/dev/null | tr -d '\r[:space:]' || true)
+            [ -n "$PID" ] && break
+            sleep 1
+          done
+          echo "$PID" > diagnostics/pid.txt
+          [ -n "$PID" ] || { echo APP_PID_NOT_FOUND | tee diagnostics/result.txt; exit 11; }
+          sleep 4
+          adb shell pidof "$PKG" > diagnostics/pid4.txt || true
+          frida-ps -Uai > diagnostics/frida-ps.txt 2>&1 || true
+
+          set +e
+          frida-dexdump -U -p "$PID" -o diagnostics/dex-early > diagnostics/dexdump-early.txt 2>&1
+          EARLY=$?
+          set -e
+          sleep 8
+          PID2=$(adb shell pidof "$PKG" 2>/dev/null | tr -d '\r[:space:]' || true)
+          echo "$PID2" > diagnostics/pid-after-early.txt
+          if [ -n "$PID2" ]; then
+            set +e
+            frida-dexdump -U -p "$PID2" -o diagnostics/dex-late > diagnostics/dexdump-late.txt 2>&1
+            LATE=$?
+            set -e
+          else
+            LATE=99
+          fi
+
+          python3 - <<'PY'
+          import glob,hashlib,os
+          out='diagnostics/dex-all'; os.makedirs(out,exist_ok=True)
+          seen=set(); n=0
+          for p in sorted(glob.glob('diagnostics/dex-*/*.dex')):
+              if '/dex-all/' in p: continue
+              b=open(p,'rb').read(); h=hashlib.sha256(b).hexdigest()
+              if h in seen: continue
+              seen.add(h); n+=1
+              open(f'{out}/runtime-{n:03d}-{h[:12]}.dex','wb').write(b)
+          print(n, file=open('diagnostics/dex-count.txt','w'))
+          PY
+          COUNT=$(cat diagnostics/dex-count.txt)
+          adb shell pidof "$PKG" > diagnostics/pid-final.txt || true
+          adb shell dumpsys activity activities > diagnostics/activities.txt || true
+          adb logcat -d -v threadtime > diagnostics/logcat.txt || true
+
+          if [ "$COUNT" -gt 0 ]; then
+            curl -fL --retry 3 --retry-all-errors https://github.com/skylot/jadx/releases/download/v1.5.6/jadx-1.5.6.zip -o /tmp/jadx.zip
+            rm -rf /tmp/jadx && unzip -q /tmp/jadx.zip -d /tmp/jadx
+            mapfile -t DEXES < <(find diagnostics/dex-all -type f -name '*.dex' | sort)
+            /tmp/jadx/bin/jadx --no-res --show-bad-code -d diagnostics/jadx "${DEXES[@]}" > diagnostics/jadx.log 2>&1 || true
+            grep -RIna -E 'StartPlayVOD|startPlayVOD|PlayAty|getMedias\(|Media;->getName|vod_no_media|No media|portalCore/v9/startPlayVOD|setDataSource|Program' \
+              diagnostics/jadx/sources > diagnostics/vod-hits.txt || true
+          fi
+          echo "EARLY=$EARLY LATE=$LATE DEX_COUNT=$COUNT PID_FINAL=$(cat diagnostics/pid-final.txt 2>/dev/null || true)" | tee diagnostics/result.txt
+          test -s diagnostics/pid-final.txt
+          test "$COUNT" -gt 0
+          BASH
+          chmod +x diagnostics/trace.sh
+          bash -n diagnostics/trace.sh
+
+      - name: Android 16 runtime DEX trace
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          script: bash diagnostics/trace.sh
+
+      - name: Upload trace diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stable-vod-runtime-dex-trace
+          path: diagnostics/**
+          retention-days: 7
