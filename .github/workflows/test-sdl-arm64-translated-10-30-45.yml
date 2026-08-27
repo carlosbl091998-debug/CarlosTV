@@ -1,4 +1,4 @@
-name: Test SDL ARM64 candidate 10-30-45s
+name: Compare stable vs SDL ARM64 10-30-45s
 
 on:
   workflow_dispatch:
@@ -11,10 +11,6 @@ jobs:
   arm64-runtime:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
-    strategy:
-      fail-fast: false
-      matrix:
-        api: [35, 36]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v5
@@ -28,118 +24,140 @@ jobs:
           set -euo pipefail
           sdkmanager 'build-tools;35.0.0' >/dev/null
           echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
-      - name: Download tested SDL candidate artifact
+      - name: Download exact stable base and SDL candidate
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          curl -fL --retry 4 --retry-all-errors \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H 'Accept: application/vnd.github+json' \
-            'https://api.github.com/repos/carlosbl091998-debug/CarlosTV/actions/artifacts/9633216673/zip' \
-            -o /tmp/sdl-artifact.zip
-          mkdir -p /tmp/sdl-artifact
-          unzip -q /tmp/sdl-artifact.zip -d /tmp/sdl-artifact
-          cp /tmp/sdl-artifact/candidate-sdl.apk candidate-sdl.apk
-          sha256sum candidate-sdl.apk
-      - name: Force ARM64-only package and resign
+          mkdir -p /tmp/base /tmp/sdl
+          curl -fL --retry 4 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            'https://api.github.com/repos/carlosbl091998-debug/CarlosTV/actions/artifacts/9623417943/zip' -o /tmp/base.zip
+          unzip -q /tmp/base.zip -d /tmp/base
+          BASE=''
+          while IFS= read -r f; do
+            if [ "$(sha256sum "$f" | awk '{print $1}')" = '8ba6eb4a13bdec2d8d8ab06a1502194f488ce58d9fb6de7feeb1c539ef0f7b4e' ]; then BASE="$f"; break; fi
+          done < <(find /tmp/base -type f -name '*.apk')
+          test -n "$BASE"
+          cp "$BASE" stable.apk
+          curl -fL --retry 4 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            'https://api.github.com/repos/carlosbl091998-debug/CarlosTV/actions/artifacts/9633216673/zip' -o /tmp/sdl.zip
+          unzip -q /tmp/sdl.zip -d /tmp/sdl
+          cp /tmp/sdl/candidate-sdl.apk sdl.apk
+          echo "STABLE=$(sha256sum stable.apk | awk '{print $1}')"
+          echo "SDL=$(sha256sum sdl.apk | awk '{print $1}')"
+      - name: Build ARM64-only controls and sign
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           import zipfile
-          src='candidate-sdl.apk'; out='arm64-only-unsigned.apk'
-          with zipfile.ZipFile(src) as z, zipfile.ZipFile(out,'w',allowZip64=True) as o:
-              for it in z.infolist():
-                  p=it.filename
-                  if p.startswith('META-INF/'):
-                      continue
-                  if p.startswith('lib/') and not p.startswith('lib/arm64-v8a/'):
-                      continue
-                  d=z.read(p)
-                  n=zipfile.ZipInfo(p,it.date_time)
-                  n.compress_type=it.compress_type
-                  n.comment=it.comment; n.extra=it.extra
-                  n.internal_attr=it.internal_attr; n.external_attr=it.external_attr
-                  n.create_system=it.create_system
-                  o.writestr(n,d)
+          for src,name in [('stable.apk','stable'),('sdl.apk','sdl')]:
+              out=f'{name}-arm64-unsigned.apk'
+              with zipfile.ZipFile(src) as z, zipfile.ZipFile(out,'w',allowZip64=True) as o:
+                  for it in z.infolist():
+                      p=it.filename
+                      if p.startswith('META-INF/'):
+                          continue
+                      if p.startswith('lib/') and not p.startswith('lib/arm64-v8a/'):
+                          continue
+                      d=z.read(p)
+                      n=zipfile.ZipInfo(p,it.date_time)
+                      n.compress_type=it.compress_type
+                      n.comment=it.comment; n.extra=it.extra
+                      n.internal_attr=it.internal_attr; n.external_attr=it.external_attr
+                      n.create_system=it.create_system
+                      o.writestr(n,d)
           PY
-          zipalign -P 16 -f 4 arm64-only-unsigned.apk arm64-only-aligned.apk
-          keytool -genkeypair -keystore /tmp/test.keystore -storepass android -keypass android \
-            -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname 'CN=Android Debug,O=Android,C=US' >/dev/null 2>&1
-          apksigner sign --ks /tmp/test.keystore --ks-pass pass:android --key-pass pass:android \
-            --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
-            --out arm64-only.apk arm64-only-aligned.apk
-          apksigner verify --verbose --print-certs arm64-only.apk | tee signature.txt
-          unzip -l arm64-only.apk | grep 'lib/' | tee libs.txt
-          if grep -Eq 'lib/(x86|x86_64|armeabi-v7a)/' libs.txt; then exit 1; fi
-          test -n "$(grep 'lib/arm64-v8a/' libs.txt)"
+          keytool -genkeypair -keystore /tmp/test.keystore -storepass android -keypass android -alias androiddebugkey \
+            -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Android Debug,O=Android,C=US' >/dev/null 2>&1
+          for name in stable sdl; do
+            zipalign -P 16 -f 4 "$name-arm64-unsigned.apk" "$name-arm64-aligned.apk"
+            apksigner sign --ks /tmp/test.keystore --ks-pass pass:android --key-pass pass:android \
+              --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
+              --out "$name-arm64.apk" "$name-arm64-aligned.apk"
+            apksigner verify --verbose "$name-arm64.apk"
+          done
+      - name: Create single-shell runtime test
+        shell: bash
+        run: |
+          cat > test-runtime.sh <<'BASH'
+          #!/usr/bin/env bash
+          set -u
+          mkdir -p diagnostics
+          adb shell getprop ro.product.cpu.abilist > diagnostics/abilist.txt
+          adb shell getprop ro.dalvik.vm.native.bridge > diagnostics/native-bridge.txt
+          adb shell getprop ro.enable.native.bridge.exec > diagnostics/native-bridge-exec.txt
+
+          run_case() {
+            local name="$1"
+            local apk="$2"
+            local dir="diagnostics/$name"
+            mkdir -p "$dir"
+            adb uninstall com.msandroid.mobile >/dev/null 2>&1 || true
+            adb install -g "$apk" > "$dir/install.txt" 2>&1 || true
+            adb shell pm path com.msandroid.mobile > "$dir/pm-path.txt" 2>&1 || true
+            if ! grep -q 'Success' "$dir/install.txt" || ! grep -q '^package:' "$dir/pm-path.txt"; then
+              echo INSTALL_FAIL > "$dir/result.txt"
+              adb logcat -d -v threadtime > "$dir/logcat.txt" 2>/dev/null || true
+              return 0
+            fi
+            adb logcat -c
+            adb shell monkey -p com.msandroid.mobile -c android.intent.category.LAUNCHER 1 > "$dir/monkey.txt" 2>&1 || true
+            sleep 10
+            adb shell pidof com.msandroid.mobile | tr -d '\r[:space:]' > "$dir/pid10.txt" || true
+            adb shell dumpsys activity activities > "$dir/activity10.txt" 2>/dev/null || true
+            sleep 20
+            adb shell pidof com.msandroid.mobile | tr -d '\r[:space:]' > "$dir/pid30.txt" || true
+            adb shell dumpsys activity activities > "$dir/activity30.txt" 2>/dev/null || true
+            sleep 15
+            adb shell pidof com.msandroid.mobile | tr -d '\r[:space:]' > "$dir/pid45.txt" || true
+            adb shell dumpsys activity activities > "$dir/activity45.txt" 2>/dev/null || true
+            adb logcat -d -v threadtime > "$dir/logcat.txt" 2>/dev/null || true
+            adb logcat -b crash -d -v threadtime > "$dir/crash-buffer.txt" 2>/dev/null || true
+            {
+              echo "PID10=$(cat "$dir/pid10.txt" 2>/dev/null)"
+              echo "PID30=$(cat "$dir/pid30.txt" 2>/dev/null)"
+              echo "PID45=$(cat "$dir/pid45.txt" 2>/dev/null)"
+            } > "$dir/pids.txt"
+            if [ -s "$dir/pid10.txt" ] && [ -s "$dir/pid30.txt" ] && [ -s "$dir/pid45.txt" ]; then
+              echo PASS_45 > "$dir/result.txt"
+            else
+              echo PROCESS_DIED > "$dir/result.txt"
+            fi
+            cat "$dir/pids.txt"
+            cat "$dir/result.txt"
+          }
+
+          run_case stable stable-arm64.apk
+          run_case sdl sdl-arm64.apk
+          echo "STABLE_RESULT=$(cat diagnostics/stable/result.txt)"
+          echo "SDL_RESULT=$(cat diagnostics/sdl/result.txt)"
+          BASH
+          chmod +x test-runtime.sh
       - name: Enable KVM
         shell: bash
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-      - name: Android ${{ matrix.api }} translated ARM64 10-30-45
+      - name: Android 16 ARM64 translated stable vs SDL 10-30-45
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: ${{ matrix.api }}
+          api-level: 36
           target: google_apis
           arch: x86_64
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
-          script: |
-            mkdir -p diagnostics
-            adb shell getprop ro.product.cpu.abilist > diagnostics/abilist.txt
-            adb shell getprop ro.dalvik.vm.native.bridge > diagnostics/native-bridge.txt
-            adb shell getprop ro.enable.native.bridge.exec > diagnostics/native-bridge-exec.txt
-            adb uninstall com.msandroid.mobile >/dev/null 2>&1 || true
-            set +e
-            adb install -g arm64-only.apk > diagnostics/install.txt 2>&1
-            INSTALL_RC=$?
-            set -e
-            cat diagnostics/install.txt
-            echo "$INSTALL_RC" > diagnostics/install-rc.txt
-            adb shell pm path com.msandroid.mobile > diagnostics/pm-path.txt 2>&1 || true
-            cat diagnostics/pm-path.txt
-            if ! grep -q 'Success' diagnostics/install.txt || ! grep -q '^package:' diagnostics/pm-path.txt; then
-              echo INSTALL_FAIL > diagnostics/result.txt
-              adb logcat -d -v threadtime > diagnostics/logcat.txt || true
-              exit 0
-            fi
-            adb logcat -c
-            adb shell monkey -p com.msandroid.mobile -c android.intent.category.LAUNCHER 1 > diagnostics/monkey.txt 2>&1 || true
-            sleep 10
-            adb shell pidof com.msandroid.mobile | tr -d '\r[:space:]' > diagnostics/pid10.txt || true
-            adb shell dumpsys activity activities > diagnostics/activity10.txt || true
-            sleep 20
-            adb shell pidof com.msandroid.mobile | tr -d '\r[:space:]' > diagnostics/pid30.txt || true
-            adb shell dumpsys activity activities > diagnostics/activity30.txt || true
-            sleep 15
-            adb shell pidof com.msandroid.mobile | tr -d '\r[:space:]' > diagnostics/pid45.txt || true
-            adb shell dumpsys activity activities > diagnostics/activity45.txt || true
-            adb logcat -d -v threadtime > diagnostics/logcat.txt || true
-            adb logcat -b crash -d -v threadtime > diagnostics/crash-buffer.txt || true
-            for t in 10 30 45; do
-              echo "PID${t}=$(cat diagnostics/pid${t}.txt 2>/dev/null)"
-            done | tee diagnostics/pids.txt
-            if [ -s diagnostics/pid10.txt ] && [ -s diagnostics/pid30.txt ] && [ -s diagnostics/pid45.txt ]; then
-              echo PASS_45 > diagnostics/result.txt
-            else
-              echo PROCESS_DIED > diagnostics/result.txt
-            fi
-            cat diagnostics/result.txt
-      - name: Upload ARM64 runtime diagnostics
+          script: bash test-runtime.sh
+      - name: Upload comparison diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sdl-arm64-runtime-api${{ matrix.api }}-10-30-45
+          name: stable-vs-sdl-arm64-api36-10-30-45
           path: |
-            arm64-only.apk
-            signature.txt
-            libs.txt
+            stable-arm64.apk
+            sdl-arm64.apk
             diagnostics/**
           retention-days: 7
