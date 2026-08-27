@@ -30,8 +30,9 @@ curl -fL --retry 3 --retry-all-errors \
   -o "$WORK/apktool.jar"
 java -jar "$WORK/apktool.jar" d -f "$BASE" -o "$WORK/decoded" >/dev/null
 
-# Inject an early ContentProvider that loads Frida Gadget. The provider catches all
-# load errors so it cannot take down the application if an ABI is unsupported.
+# Inject a provider that schedules Gadget loading after the protector has had time
+# to initialize. Loading Gadget synchronously during provider startup races with
+# SecNeo/libDexHelper on Android 16 x86 translation and caused a native SIGSEGV.
 SMALI="$WORK/decoded/smali/com/xuper/vodfix"
 mkdir -p "$SMALI"
 cat > "$SMALI/VodFixProvider.smali" <<'SMALI'
@@ -46,10 +47,16 @@ cat > "$SMALI/VodFixProvider.smali" <<'SMALI'
 .end method
 
 .method public onCreate()Z
-    .locals 1
+    .locals 4
     :try_start
-    const-string v0, "gadget"
-    invoke-static {v0}, Ljava/lang/System;->loadLibrary(Ljava/lang/String;)V
+    new-instance v0, Landroid/os/Handler;
+    invoke-static {}, Landroid/os/Looper;->getMainLooper()Landroid/os/Looper;
+    move-result-object v1
+    invoke-direct {v0, v1}, Landroid/os/Handler;-><init>(Landroid/os/Looper;)V
+    new-instance v1, Lcom/xuper/vodfix/VodFixProvider$1;
+    invoke-direct {v1}, Lcom/xuper/vodfix/VodFixProvider$1;-><init>()V
+    const-wide/16 v2, 0x1f40
+    invoke-virtual {v0, v1, v2, v3}, Landroid/os/Handler;->postDelayed(Ljava/lang/Runnable;J)Z
     :try_end
     .catch Ljava/lang/Throwable; {:try_start .. :try_end} :catch_all
     :catch_all
@@ -85,6 +92,30 @@ cat > "$SMALI/VodFixProvider.smali" <<'SMALI'
     .locals 1
     const/4 v0, 0x0
     return v0
+.end method
+SMALI
+
+cat > "$SMALI/VodFixProvider\$1.smali" <<'SMALI'
+.class final Lcom/xuper/vodfix/VodFixProvider$1;
+.super Ljava/lang/Object;
+.implements Ljava/lang/Runnable;
+.source "VodFixProvider.java"
+
+.method public constructor <init>()V
+    .locals 0
+    invoke-direct {p0}, Ljava/lang/Object;-><init>()V
+    return-void
+.end method
+
+.method public run()V
+    .locals 1
+    :try_start
+    const-string v0, "gadget"
+    invoke-static {v0}, Ljava/lang/System;->loadLibrary(Ljava/lang/String;)V
+    :try_end
+    .catch Ljava/lang/Throwable; {:try_start .. :try_end} :catch_all
+    :catch_all
+    return-void
 .end method
 SMALI
 
@@ -145,7 +176,6 @@ CFG
         installed = true;
         console.log('[XUPER_VOD_FIX] cb.z1.g hook installed');
       } catch (e) {
-        // Protected classes may not exist at provider startup; retry after loader initialization.
       }
     });
   }
@@ -157,7 +187,6 @@ done
 
 java -jar "$WORK/apktool.jar" b "$WORK/decoded" -o "$WORK/unsigned.apk" >/dev/null
 
-# Sign with a disposable test key. This candidate is for controlled validation only.
 KEYSTORE="$WORK/test.jks"
 keytool -genkeypair -noprompt -keystore "$KEYSTORE" -storepass android -keypass android \
   -alias androiddebugkey -dname 'CN=Android Debug,O=Android,C=US' -keyalg RSA -keysize 2048 -validity 10000 >/dev/null 2>&1
