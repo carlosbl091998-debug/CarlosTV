@@ -1,0 +1,60 @@
+name: Analyze VOD PlayAty
+
+on:
+  push:
+    paths:
+      - '.github/workflows/analyze-vod-playaty.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  analyze-vod:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare stable checkpoint APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p work out
+          curl -fL --retry 4 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            'https://api.github.com/repos/${{ github.repository }}/actions/artifacts/9623417943/zip' \
+            -o work/stable.zip
+          unzip -q work/stable.zip -d work/stable
+          APK="$(find work/stable -type f -name '*.apk' | head -1)"
+          cp "$APK" work/stable.apk
+          sha256sum work/stable.apk | tee out/apk-sha256.txt
+      - name: Decompile only relevant VOD code
+        run: |
+          set -euo pipefail
+          curl -fL --retry 4 --retry-all-errors \
+            'https://github.com/skylot/jadx/releases/download/v1.5.5/jadx-1.5.5.zip' \
+            -o work/jadx.zip
+          unzip -q work/jadx.zip -d work/jadx
+          work/jadx/bin/jadx --no-res --show-bad-code --comments-level debug \
+            -d work/src work/stable.apk > out/jadx-console.txt 2>&1 || true
+          mkdir -p out/classes
+          find work/src/sources -type f \( \
+            -path '*com/mobile/brasiltv/activity/PlayAty*' -o \
+            -path '*mobile/com/requestframe/utils/bean/StartPlayVODBean*' -o \
+            -path '*mobile/com/requestframe/utils/response/StartPlayVODData*' -o \
+            -path '*mobile/com/requestframe/utils/response/StartPlayVODResult*' \
+          \) -print -exec cp --parents {} out/classes/ \; || true
+          grep -RniE 'startPlayVOD|episodeList|media|stream|sequence|returnCode|returnMsg|toast|PlayAty' \
+            work/src/sources/com/mobile/brasiltv \
+            work/src/sources/mobile/com/requestframe 2>/dev/null \
+            | head -5000 > out/vod-references.txt || true
+          grep -RniE 'api/portalCore/v(9|10)/startPlayVOD' work/src/sources 2>/dev/null \
+            | head -1000 > out/vod-endpoint-references.txt || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vod-playaty-analysis
+          path: out/**
+          retention-days: 7
