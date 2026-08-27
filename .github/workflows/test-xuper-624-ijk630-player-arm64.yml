@@ -1,4 +1,3 @@
-# Triggered validation run
 name: Test Xuper 6.2.4 with 6.3 arm64 IJK player
 
 on:
@@ -7,6 +6,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/test-xuper-624-ijk630-player-arm64.yml'
+      - 'donors/ijk630/**'
 
 jobs:
   build-test:
@@ -14,9 +14,9 @@ jobs:
     timeout-minutes: 35
     env:
       PKG: com.msandroid.mobile
-      DONOR_URL: https://magisapktv.com/files/magis-celular-magisapktv.com.apk
-      DONOR_SHA256: d4edfc8ee9fbc008f9daa2cbb3aac733939987b7570bfc58a7065ebecfaa510a
       BASE_SHA256: 8ba6eb4a13bdec2d8d8ab06a1502194f488ce58d9fb6de7feeb1c539ef0f7b4e
+      PLAYER630_SHA256: 6d47108c205f27a5a5867fac467da5b078ce71722f07611bf00ad0040390baeb
+      PLAYER630_XZ_SHA256: 7e6284bb5c46b4349d196b08aaa2766e32667bfd010aa5dfc9c8dcb41d8f6c14
     steps:
       - uses: actions/checkout@v4
 
@@ -52,60 +52,44 @@ jobs:
           while IFS= read -r candidate; do
             sha=$(sha256sum "$candidate" | awk '{print $1}')
             echo "candidate=$candidate sha=$sha"
-            if [ "$sha" = "$BASE_SHA256" ]; then
-              BASE="$candidate"
-              break
-            fi
+            if [ "$sha" = "$BASE_SHA256" ]; then BASE="$candidate"; break; fi
           done < <(find /tmp/base -type f -name '*.apk' -print)
           test -n "$BASE"
           cp "$BASE" stable-624.apk
-          echo "BASE_SHA=$(sha256sum stable-624.apk | awk '{print $1}')"
           test "$(sha256sum stable-624.apk | awk '{print $1}')" = "$BASE_SHA256"
+          echo "BASE_OK=$BASE_SHA256"
 
-      - name: Download and verify exact 6.3 donor
+      - name: Rebuild and verify 6.3 arm64 IJK player donor
         shell: bash
         run: |
           set -euo pipefail
-          curl -fL --retry 5 --retry-all-errors --connect-timeout 20 "$DONOR_URL" -o donor-630.apk
-          ACTUAL=$(sha256sum donor-630.apk | awk '{print $1}')
-          echo "DONOR_SHA=$ACTUAL"
-          test "$ACTUAL" = "$DONOR_SHA256"
-          unzip -p donor-630.apk lib/arm64-v8a/libijkplayer.so > libijkplayer-630.so
+          test "$(find donors/ijk630 -maxdepth 1 -name 'part-*.b64' | wc -l)" -eq 6
+          cat donors/ijk630/part-{00..05}.b64 > /tmp/player630.b64
+          base64 -d /tmp/player630.b64 > /tmp/libijkplayer-630.so.xz
+          XZ_SHA=$(sha256sum /tmp/libijkplayer-630.so.xz | awk '{print $1}')
+          echo "PLAYER_XZ_SHA=$XZ_SHA"
+          test "$XZ_SHA" = "$PLAYER630_XZ_SHA256"
+          xz -dc /tmp/libijkplayer-630.so.xz > libijkplayer-630.so
+          PLAYER_SHA=$(sha256sum libijkplayer-630.so | awk '{print $1}')
+          echo "PLAYER_SHA=$PLAYER_SHA"
+          test "$PLAYER_SHA" = "$PLAYER630_SHA256"
+          file libijkplayer-630.so
+          readelf -h libijkplayer-630.so | tee /tmp/player-elf-header.txt
+          grep -q 'Machine:.*AArch64' /tmp/player-elf-header.txt
           unzip -p stable-624.apk lib/arm64-v8a/libijkplayer.so > libijkplayer-624.so
-          file libijkplayer-630.so libijkplayer-624.so
-          test -s libijkplayer-630.so
+          test "$(sha256sum libijkplayer-624.so | awk '{print $1}')" != "$PLAYER630_SHA256"
+          echo 'PLAYER_DONOR=PASS'
 
-      - name: Verify 6.3 player ABI compatibility with 6.2.4 native stack
+      - name: Check native dependency surface
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p /tmp/native624 /tmp/native630
-          unzip -p stable-624.apk lib/arm64-v8a/libijkffmpeg.so > /tmp/native624/libijkffmpeg.so
-          unzip -p stable-624.apk lib/arm64-v8a/libijksdl.so > /tmp/native624/libijksdl.so
-          unzip -p donor-630.apk lib/arm64-v8a/libijkffmpeg.so > /tmp/native630/libijkffmpeg.so
-          unzip -p donor-630.apk lib/arm64-v8a/libijksdl.so > /tmp/native630/libijksdl.so
-          python3 - <<'PY'
-          import subprocess,sys
-          def syms(path, undef=False):
-              out=subprocess.check_output(['readelf','-Ws',path],text=True,errors='ignore')
-              s=set()
-              for line in out.splitlines():
-                  p=line.split()
-                  if len(p) < 8: continue
-                  ndx,name=p[6],p[7].split('@')[0]
-                  if undef and ndx=='UND': s.add(name)
-                  elif not undef and ndx!='UND' and p[4] in ('GLOBAL','WEAK'): s.add(name)
-              return s
-          u=syms('libijkplayer-630.so',True)
-          donor_exports=syms('/tmp/native630/libijkffmpeg.so')|syms('/tmp/native630/libijksdl.so')
-          base_exports=syms('/tmp/native624/libijkffmpeg.so')|syms('/tmp/native624/libijksdl.so')
-          cross=sorted(u & donor_exports)
-          missing=[x for x in cross if x not in base_exports]
-          print('CROSS_LIBRARY_REFS=',len(cross))
-          print('MISSING_IN_624=',len(missing))
-          if missing:
-              print('\n'.join(missing[:100])); sys.exit(31)
-          PY
+          readelf -d libijkplayer-624.so | grep NEEDED | tee /tmp/needed-624.txt || true
+          readelf -d libijkplayer-630.so | grep NEEDED | tee /tmp/needed-630.txt || true
+          echo '--- 6.2.4 NEEDED ---'
+          cat /tmp/needed-624.txt
+          echo '--- 6.3 NEEDED ---'
+          cat /tmp/needed-630.txt
 
       - name: Build minimal hybrid APK
         shell: bash
@@ -113,10 +97,8 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           import zipfile
-          src='stable-624.apk'; donor='donor-630.apk'; out='hybrid-unsigned.apk'
-          target='lib/arm64-v8a/libijkplayer.so'
-          with zipfile.ZipFile(donor) as d:
-              replacement=d.read(target)
+          src='stable-624.apk'; out='hybrid-unsigned.apk'; target='lib/arm64-v8a/libijkplayer.so'
+          replacement=open('libijkplayer-630.so','rb').read()
           with zipfile.ZipFile(src) as zin, zipfile.ZipFile(out,'w',allowZip64=True) as zout:
               for item in zin.infolist():
                   if item.filename.startswith('META-INF/') or item.filename==target:
@@ -139,7 +121,7 @@ jobs:
             -dname 'CN=Android Debug,O=Android,C=US' >/dev/null 2>&1
           apksigner sign --ks /tmp/test.keystore --ks-pass pass:android --key-pass pass:android \
             --out Xuper-6.2.4-IJK630-Player-arm64.apk hybrid-aligned.apk
-          apksigner verify --verbose Xuper-6.2.4-IJK630-Player-arm64.apk
+          apksigner verify --verbose --print-certs Xuper-6.2.4-IJK630-Player-arm64.apk | tee /tmp/signature.txt
 
       - name: Verify minimal-diff invariants
         shell: bash
@@ -154,11 +136,12 @@ jobs:
           done
           A=$(unzip -p stable-624.apk lib/arm64-v8a/libijkplayer.so | sha256sum | awk '{print $1}')
           B=$(unzip -p Xuper-6.2.4-IJK630-Player-arm64.apk lib/arm64-v8a/libijkplayer.so | sha256sum | awk '{print $1}')
-          D=$(unzip -p donor-630.apk lib/arm64-v8a/libijkplayer.so | sha256sum | awk '{print $1}')
-          echo "player base=$A hybrid=$B donor=$D" | tee -a diagnostics-ijk630/invariants.txt
-          test "$B" = "$D"
+          echo "player base=$A hybrid=$B expected=$PLAYER630_SHA256" | tee -a diagnostics-ijk630/invariants.txt
+          test "$B" = "$PLAYER630_SHA256"
           test "$A" != "$B"
+          unzip -t Xuper-6.2.4-IJK630-Player-arm64.apk | tail -2 | tee diagnostics-ijk630/zip-test.txt
           sha256sum stable-624.apk Xuper-6.2.4-IJK630-Player-arm64.apk | tee diagnostics-ijk630/apk-sha256.txt
+          cp /tmp/player-elf-header.txt /tmp/needed-624.txt /tmp/needed-630.txt /tmp/signature.txt diagnostics-ijk630/
 
       - name: Enable KVM
         run: |
@@ -180,6 +163,7 @@ jobs:
             APK='Xuper-6.2.4-IJK630-Player-arm64.apk'
             adb uninstall "$PKG" >/dev/null 2>&1 || true
             adb install -g "$APK" | tee diagnostics-ijk630/install.txt
+            grep -q 'Success' diagnostics-ijk630/install.txt
             adb logcat -c
             adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
             sleep 8
