@@ -1,0 +1,84 @@
+name: Analyze base APK with JADX
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  jadx-analysis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Download exact Xuper 4.34.5 APK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          PAGE='https://www.mediafire.com/file/azgvigddkzvrss4/Xuper_4.34.5_%28com.android.mgstv%29.apk/file'
+          curl -fL --retry 3 -A 'Mozilla/5.0' "$PAGE" -o mf.html
+          python3 - <<'PY' > direct.txt
+          import html,re
+          t=html.unescape(open('mf.html',encoding='utf-8',errors='ignore').read()).replace('\\/','/')
+          for p in [r'id=[\"\']downloadButton[\"\'][^>]*href=[\"\']([^\"\']+)',r'href=[\"\']([^\"\']+)[\"\'][^>]*id=[\"\']downloadButton[\"\']']:
+              m=re.search(p,t,re.I)
+              if m:
+                  print(m.group(1)); break
+          PY
+          test -s direct.txt
+          curl -fL --retry 3 -A 'Mozilla/5.0' "$(cat direct.txt)" -o base.apk
+          unzip -t base.apk >/dev/null
+          python3 - <<'PY'
+          import hashlib,sys,zipfile
+          expected='165d2aeefe3bcc4b79c839708d82d41fd8e0dc6259acd3116cf8a3a00ea8c25f'
+          with zipfile.ZipFile('base.apk') as z:
+              names=sorted(n for n in z.namelist() if not n.upper().startswith('META-INF/'))
+              h=hashlib.sha256()
+              for n in names:
+                  d=z.read(n); h.update(n.encode()+b'\0'+hashlib.sha256(d).digest())
+          got=h.hexdigest(); print('logical_sha256=',got)
+          if got != expected: sys.exit('APK content mismatch')
+          PY
+
+      - name: Install JADX 1.5.6
+        shell: bash
+        run: |
+          set -euxo pipefail
+          curl -fL --retry 3 -o jadx.zip https://github.com/skylot/jadx/releases/download/v1.5.6/jadx-1.5.6.zip
+          echo '545ea2be9c242511bc145755cf4bda2485ade42966e096f8b4d3da2a230e8974  jadx.zip' | sha256sum -c -
+          unzip -q jadx.zip -d jadx-tool
+          ./jadx-tool/bin/jadx --version
+
+      - name: Decompile APK with JADX
+        shell: bash
+        run: |
+          set +e
+          rm -rf jadx-out jadx-report
+          mkdir -p jadx-report
+          ./jadx-tool/bin/jadx -d jadx-out base.apk > jadx-report/jadx-stdout.txt 2> jadx-report/jadx-stderr.txt
+          echo $? > jadx-report/jadx-exit-code.txt
+          set -e
+          python3 tools/analyze_jadx_output.py base.apk jadx-out jadx-report
+          echo '===== JADX SUMMARY ====='
+          cat jadx-report/summary.txt
+
+      - name: Upload JADX report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: base-apk-jadx-analysis
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            jadx-report/**
+            jadx-out/sources/**
+            jadx-out/resources/AndroidManifest.xml
