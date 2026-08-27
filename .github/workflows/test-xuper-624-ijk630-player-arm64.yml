@@ -1,0 +1,197 @@
+name: Test Xuper 6.2.4 with 6.3 arm64 IJK player
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/test-xuper-624-ijk630-player-arm64.yml'
+
+jobs:
+  build-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      PKG: com.msandroid.mobile
+      DONOR_URL: https://magisapktv.com/files/magis-celular-magisapktv.com.apk
+      DONOR_SHA256: d4edfc8ee9fbc008f9daa2cbb3aac733939987b7570bfc58a7065ebecfaa510a
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager 'build-tools;35.0.0' >/dev/null
+          echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
+
+      - name: Recover exact stable 6.2.4 checkpoint
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/base
+          curl -fL --retry 4 --retry-all-errors \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            'https://api.github.com/repos/carlosbl091998-debug/CarlosTV/actions/artifacts/9621536337/zip' \
+            -o /tmp/base.zip
+          unzip -q /tmp/base.zip -d /tmp/base
+          BASE=$(find /tmp/base -type f -name '*.apk' | head -1)
+          test -n "$BASE"
+          cp "$BASE" stable-624.apk
+          echo "BASE_SHA=$(sha256sum stable-624.apk | awk '{print $1}')"
+          test "$(sha256sum stable-624.apk | awk '{print $1}')" = '8ba6eb4a13bdec2d8d8ab06a1502194f488ce58d9fb6de7feeb1c539ef0f7b4e'
+
+      - name: Download and verify exact 6.3 donor
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 --retry-all-errors --connect-timeout 20 "$DONOR_URL" -o donor-630.apk
+          ACTUAL=$(sha256sum donor-630.apk | awk '{print $1}')
+          echo "DONOR_SHA=$ACTUAL"
+          test "$ACTUAL" = "$DONOR_SHA256"
+          unzip -p donor-630.apk lib/arm64-v8a/libijkplayer.so > libijkplayer-630.so
+          unzip -p stable-624.apk lib/arm64-v8a/libijkplayer.so > libijkplayer-624.so
+          file libijkplayer-630.so libijkplayer-624.so
+          test -s libijkplayer-630.so
+
+      - name: Verify 6.3 player ABI compatibility with 6.2.4 native stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/native624 /tmp/native630
+          unzip -p stable-624.apk lib/arm64-v8a/libijkffmpeg.so > /tmp/native624/libijkffmpeg.so
+          unzip -p stable-624.apk lib/arm64-v8a/libijksdl.so > /tmp/native624/libijksdl.so
+          unzip -p donor-630.apk lib/arm64-v8a/libijkffmpeg.so > /tmp/native630/libijkffmpeg.so
+          unzip -p donor-630.apk lib/arm64-v8a/libijksdl.so > /tmp/native630/libijksdl.so
+          python3 - <<'PY'
+          import subprocess,sys
+          def syms(path, undef=False):
+              out=subprocess.check_output(['readelf','-Ws',path],text=True,errors='ignore')
+              s=set()
+              for line in out.splitlines():
+                  p=line.split()
+                  if len(p) < 8: continue
+                  ndx,name=p[6],p[7].split('@')[0]
+                  if undef and ndx=='UND': s.add(name)
+                  elif not undef and ndx!='UND' and p[4] in ('GLOBAL','WEAK'): s.add(name)
+              return s
+          u=syms('libijkplayer-630.so',True)
+          donor_exports=syms('/tmp/native630/libijkffmpeg.so')|syms('/tmp/native630/libijksdl.so')
+          base_exports=syms('/tmp/native624/libijkffmpeg.so')|syms('/tmp/native624/libijksdl.so')
+          cross=sorted(u & donor_exports)
+          missing=[x for x in cross if x not in base_exports]
+          print('CROSS_LIBRARY_REFS=',len(cross))
+          print('MISSING_IN_624=',len(missing))
+          if missing:
+              print('\n'.join(missing[:100])); sys.exit(31)
+          PY
+
+      - name: Build minimal hybrid APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import zipfile
+          src='stable-624.apk'; donor='donor-630.apk'; out='hybrid-unsigned.apk'
+          target='lib/arm64-v8a/libijkplayer.so'
+          with zipfile.ZipFile(donor) as d:
+              replacement=d.read(target)
+          with zipfile.ZipFile(src) as zin, zipfile.ZipFile(out,'w',allowZip64=True) as zout:
+              for item in zin.infolist():
+                  if item.filename.startswith('META-INF/') or item.filename==target:
+                      continue
+                  data=zin.read(item.filename)
+                  ni=zipfile.ZipInfo(item.filename,item.date_time)
+                  ni.compress_type=item.compress_type
+                  ni.comment=item.comment; ni.extra=item.extra
+                  ni.internal_attr=item.internal_attr; ni.external_attr=item.external_attr
+                  ni.create_system=item.create_system
+                  zout.writestr(ni,data)
+              ni=zipfile.ZipInfo(target)
+              ni.compress_type=zipfile.ZIP_STORED
+              ni.external_attr=0o100755 << 16
+              zout.writestr(ni,replacement)
+          PY
+          zipalign -P 16 -f 4 hybrid-unsigned.apk hybrid-aligned.apk
+          keytool -genkeypair -v -keystore /tmp/test.keystore -storepass android -keypass android \
+            -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname 'CN=Android Debug,O=Android,C=US' >/dev/null 2>&1
+          apksigner sign --ks /tmp/test.keystore --ks-pass pass:android --key-pass pass:android \
+            --out Xuper-6.2.4-IJK630-Player-arm64.apk hybrid-aligned.apk
+          apksigner verify --verbose Xuper-6.2.4-IJK630-Player-arm64.apk
+
+      - name: Verify minimal-diff invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostics-ijk630
+          for f in classes.dex resources.arsc; do
+            A=$(unzip -p stable-624.apk "$f" | sha256sum | awk '{print $1}')
+            B=$(unzip -p Xuper-6.2.4-IJK630-Player-arm64.apk "$f" | sha256sum | awk '{print $1}')
+            echo "$f base=$A hybrid=$B" | tee -a diagnostics-ijk630/invariants.txt
+            test "$A" = "$B"
+          done
+          A=$(unzip -p stable-624.apk lib/arm64-v8a/libijkplayer.so | sha256sum | awk '{print $1}')
+          B=$(unzip -p Xuper-6.2.4-IJK630-Player-arm64.apk lib/arm64-v8a/libijkplayer.so | sha256sum | awk '{print $1}')
+          D=$(unzip -p donor-630.apk lib/arm64-v8a/libijkplayer.so | sha256sum | awk '{print $1}')
+          echo "player base=$A hybrid=$B donor=$D" | tee -a diagnostics-ijk630/invariants.txt
+          test "$B" = "$D"
+          test "$A" != "$B"
+          sha256sum stable-624.apk Xuper-6.2.4-IJK630-Player-arm64.apk | tee diagnostics-ijk630/apk-sha256.txt
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install and launch on Android 16
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          script: |
+            set -euo pipefail
+            APK='Xuper-6.2.4-IJK630-Player-arm64.apk'
+            adb uninstall "$PKG" >/dev/null 2>&1 || true
+            adb install -g "$APK" | tee diagnostics-ijk630/install.txt
+            adb logcat -c
+            adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+            sleep 8
+            PID8=$(adb shell pidof "$PKG" | tr -d '\r[:space:]' || true)
+            echo "PID_8S=$PID8" | tee diagnostics-ijk630/runtime.txt
+            test -n "$PID8"
+            sleep 12
+            PID20=$(adb shell pidof "$PKG" | tr -d '\r[:space:]' || true)
+            echo "PID_20S=$PID20" | tee -a diagnostics-ijk630/runtime.txt
+            test -n "$PID20"
+            adb shell dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity' | tee diagnostics-ijk630/activity.txt || true
+            adb logcat -d -v threadtime | grep -Eai 'FATAL EXCEPTION|AndroidRuntime|UnsatisfiedLinkError|dlopen failed|linker|ijk|ffmpeg|player' | tail -600 > diagnostics-ijk630/runtime-errors.txt || true
+            adb exec-out screencap -p > diagnostics-ijk630/screen-20s.png || true
+            echo 'INSTALL_LAUNCH_ANDROID16=PASS' | tee -a diagnostics-ijk630/runtime.txt
+
+      - name: Upload tested hybrid and diagnostics
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xuper-624-ijk630-player-arm64-tested
+          path: |
+            Xuper-6.2.4-IJK630-Player-arm64.apk
+            diagnostics-ijk630/**
+          retention-days: 7
+          if-no-files-found: error
