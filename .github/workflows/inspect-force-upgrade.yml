@@ -1,4 +1,4 @@
-name: Inspect force-upgrade VOD path
+name: Inspect VOD error path
 
 on:
   push:
@@ -45,22 +45,36 @@ jobs:
           set -euo pipefail
           curl -fL --retry 4 https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar -o apktool.jar
           java -jar apktool.jar d -f stable.apk -o decoded
-      - name: Locate force-upgrade class and callers
+      - name: Trace StartPlayVOD error handling
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p diagnostics
-          grep -RIn --include='*.smali' -E 'ForceUpgradeExceptionDialog|dialog_force_upgrade_exception|version_forbidden_upgrade' decoded > diagnostics/force-upgrade-hits.txt || true
-          grep -RIn --include='*.smali' -B 20 -A 35 -E 'ForceUpgradeExceptionDialog' decoded > diagnostics/force-upgrade-context.txt || true
-          find decoded -type f -iname '*ForceUpgrade*' -print > diagnostics/force-upgrade-files.txt || true
-          echo '=== FILES ==='
-          cat diagnostics/force-upgrade-files.txt || true
-          echo '=== HITS ==='
-          head -200 diagnostics/force-upgrade-hits.txt || true
-          test -s diagnostics/force-upgrade-hits.txt
+          grep -RIn --include='*.smali' -E 'StartPlayVOD|startPlayVOD|ResultException|returnCode|errorMessage|getErrorMessage|getReturnCode' decoded > diagnostics/vod-core-hits.txt || true
+          grep -RIn --include='*.smali' -B 35 -A 80 -E 'startPlayVOD|StartPlayVOD' decoded > diagnostics/vod-context.txt || true
+          grep -RIn --include='*.smali' -E 'Toast;->makeText|AlertDialog|Dialog;->show|show\(\)V|setMessage|setText' decoded > diagnostics/ui-show-hits.txt || true
+          grep -RIn -E 'upgrade|update|version|forbidden|unsupported|support|movie|series|playback|play' decoded/res/values* > diagnostics/resource-hits.txt || true
+          grep -RIn --include='*.smali' -E 'upgrade|update|version|forbidden|unsupported|support' decoded > diagnostics/version-error-hits.txt || true
+          python3 - <<'PY'
+          from pathlib import Path
+          hits=[]
+          for p in Path('decoded').rglob('*.smali'):
+              s=p.read_text(errors='ignore')
+              if 'StartPlayVOD' in s or 'startPlayVOD' in s:
+                  hits.append((str(p),s))
+          with open('diagnostics/vod-files.txt','w') as f:
+              for p,_ in hits: f.write(p+'\n')
+          print('vod_files=', len(hits))
+          PY
+          echo '=== VOD FILES ==='
+          cat diagnostics/vod-files.txt || true
+          echo '=== VOD CORE HITS ==='
+          head -300 diagnostics/vod-core-hits.txt || true
+          echo '=== VERSION/ERROR HITS ==='
+          head -300 diagnostics/version-error-hits.txt || true
       - name: Upload inspection
         uses: actions/upload-artifact@v4
         with:
-          name: force-upgrade-smali-inspection
+          name: vod-error-path-inspection
           retention-days: 7
           path: diagnostics/**
