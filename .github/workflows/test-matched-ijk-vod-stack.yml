@@ -1,0 +1,165 @@
+name: Test matched IJK VOD stack
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [magis-vod-matched-ijk-validation]
+    paths:
+      - '.github/workflows/test-matched-ijk-vod-stack.yml'
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PKG: com.msandroid.mobile
+      BASE_SHA256: 8ba6eb4a13bdec2d8d8ab06a1502194f488ce58d9fb6de7feeb1c539ef0f7b4e
+      DONOR_PLAYER_SHA256: 2f319dd0f4dd2df9160b79bd64403466b212a185648e5f8c278c42f2bd62f223
+      DONOR_FFMPEG_SHA256: dcae2fb5a8bde99a8f6fcca44534fbf824f6e6e7b42d14d9c3bb74820f0be754
+      DONOR_SDL_SHA256: 2257b00c4969e6f8aaed5751e997b83921ebf91d24b9d75bfe7dd14df2be150a
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android build tools
+        run: |
+          set -euo pipefail
+          sdkmanager 'build-tools;35.0.0' >/dev/null
+          echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
+
+      - name: Recover stable APK and matched donor IJK artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/base /tmp/donor donor diagnostics
+          curl -fL --retry 4 --retry-all-errors \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            'https://api.github.com/repos/carlosbl091998-debug/CarlosTV/actions/artifacts/9623417943/zip' -o /tmp/base.zip
+          unzip -q /tmp/base.zip -d /tmp/base
+          BASE=''
+          while IFS= read -r f; do
+            sha=$(sha256sum "$f" | awk '{print $1}')
+            if [ "$sha" = "$BASE_SHA256" ]; then BASE="$f"; break; fi
+          done < <(find /tmp/base -type f -name '*.apk' -print)
+          test -n "$BASE"
+          cp "$BASE" stable.apk
+
+          curl -fL --retry 4 --retry-all-errors \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            'https://api.github.com/repos/carlosbl091998-debug/CarlosTV/actions/artifacts/9632074487/zip' -o /tmp/donor.zip
+          unzip -q /tmp/donor.zip -d /tmp/donor
+          cp /tmp/donor/libijkplayer.so donor/libijkplayer.so
+          cp /tmp/donor/libijkffmpeg.so donor/libijkffmpeg.so
+          cp /tmp/donor/libijksdl.so donor/libijksdl.so
+          test "$(sha256sum donor/libijkplayer.so | awk '{print $1}')" = "$DONOR_PLAYER_SHA256"
+          test "$(sha256sum donor/libijkffmpeg.so | awk '{print $1}')" = "$DONOR_FFMPEG_SHA256"
+          test "$(sha256sum donor/libijksdl.so | awk '{print $1}')" = "$DONOR_SDL_SHA256"
+          file donor/*.so | tee diagnostics/donor-files.txt
+          for f in donor/*.so; do readelf -d "$f" | grep NEEDED || true; done | tee diagnostics/donor-needed.txt
+
+      - name: Build signed matched-stack candidate
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import zipfile
+          src='stable.apk'; out='candidate-unsigned.apk'
+          targets={
+            'lib/arm64-v8a/libijkplayer.so': open('donor/libijkplayer.so','rb').read(),
+            'lib/arm64-v8a/libijkffmpeg.so': open('donor/libijkffmpeg.so','rb').read(),
+            'lib/arm64-v8a/libijksdl.so': open('donor/libijksdl.so','rb').read(),
+          }
+          with zipfile.ZipFile(src) as zin, zipfile.ZipFile(out,'w',allowZip64=True) as zout:
+            for item in zin.infolist():
+              if item.filename.startswith('META-INF/') or item.filename in targets:
+                continue
+              data=zin.read(item.filename)
+              ni=zipfile.ZipInfo(item.filename,item.date_time)
+              ni.compress_type=item.compress_type
+              ni.comment=item.comment; ni.extra=item.extra
+              ni.internal_attr=item.internal_attr; ni.external_attr=item.external_attr
+              ni.create_system=item.create_system
+              zout.writestr(ni,data)
+            for path,data in targets.items():
+              ni=zipfile.ZipInfo(path); ni.compress_type=zipfile.ZIP_STORED
+              ni.external_attr=0o100755 << 16
+              zout.writestr(ni,data)
+          PY
+          zipalign -P 16 -f 4 candidate-unsigned.apk candidate-aligned.apk
+          keytool -genkeypair -keystore /tmp/test.keystore -storepass android -keypass android \
+            -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname 'CN=Android Debug,O=Android,C=US' >/dev/null 2>&1
+          apksigner sign --ks /tmp/test.keystore --ks-pass pass:android --key-pass pass:android \
+            --out Magis-stable-matched-IJK-vod-candidate.apk candidate-aligned.apk
+          apksigner verify --verbose Magis-stable-matched-IJK-vod-candidate.apk | tee diagnostics/signature.txt
+          unzip -t Magis-stable-matched-IJK-vod-candidate.apk | tail -2 | tee diagnostics/zip-test.txt
+          for f in classes.dex resources.arsc; do
+            a=$(unzip -p stable.apk "$f" | sha256sum | awk '{print $1}')
+            b=$(unzip -p Magis-stable-matched-IJK-vod-candidate.apk "$f" | sha256sum | awk '{print $1}')
+            echo "$f stable=$a candidate=$b" | tee -a diagnostics/invariants.txt
+            test "$a" = "$b"
+          done
+          sha256sum stable.apk Magis-stable-matched-IJK-vod-candidate.apk | tee diagnostics/apk-sha256.txt
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Android 16 stable control vs matched stack
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          script: |
+            set -u
+            test_one() {
+              name="$1"; apk="$2"
+              mkdir -p "diagnostics/$name"
+              adb uninstall "$PKG" >/dev/null 2>&1 || true
+              adb install -g "$apk" | tee "diagnostics/$name/install.txt"
+              grep -q Success "diagnostics/$name/install.txt" || { echo INSTALL_FAIL > "diagnostics/$name/result.txt"; return 1; }
+              adb logcat -c
+              adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >"diagnostics/$name/monkey.txt" 2>&1 || true
+              sleep 8
+              adb shell pidof "$PKG" | tr -d '\r' > "diagnostics/$name/pid8.txt" || true
+              sleep 12
+              adb shell pidof "$PKG" | tr -d '\r' > "diagnostics/$name/pid20.txt" || true
+              adb logcat -d -v threadtime > "diagnostics/$name/logcat.txt" || true
+              adb logcat -b crash -d -v threadtime > "diagnostics/$name/crash.txt" || true
+              if [ -s "diagnostics/$name/pid8.txt" ] && [ -s "diagnostics/$name/pid20.txt" ]; then
+                echo PASS > "diagnostics/$name/result.txt"
+                return 0
+              fi
+              echo FAIL > "diagnostics/$name/result.txt"
+              return 1
+            }
+            test_one stable stable.apk
+            stable_rc=$?
+            test_one matched Magis-stable-matched-IJK-vod-candidate.apk
+            matched_rc=$?
+            echo "stable_rc=$stable_rc matched_rc=$matched_rc" | tee diagnostics/summary.txt
+            test "$stable_rc" -eq 0
+            test "$matched_rc" -eq 0
+
+      - name: Upload candidate and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: matched-ijk-vod-validation
+          path: |
+            Magis-stable-matched-IJK-vod-candidate.apk
+            diagnostics/**
+          retention-days: 7
