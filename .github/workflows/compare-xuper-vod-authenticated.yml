@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - magis-frida-spawn-v2
+      - main
     paths:
       - '.github/workflows/compare-xuper-vod-authenticated.yml'
 
@@ -39,24 +39,24 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Recover tested 60505 candidate
+      - name: Recover validated stable checkpoint
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          ARTIFACT_ID=9623417943
+          EXPECTED_SHA=8ba6eb4a13bdec2d8d8ab06a1502194f488ce58d9fb6de7feeb1c539ef0f7b4e
           mkdir -p /tmp/candidate
           curl -fL --retry 4 --retry-all-errors \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H 'Accept: application/vnd.github+json' \
             -H 'X-GitHub-Api-Version: 2022-11-28' \
-            'https://api.github.com/repos/carlosbl091998-debug/CarlosTV/actions/artifacts/9621536337/zip' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
             -o /tmp/candidate.zip
           unzip -q /tmp/candidate.zip -d /tmp/candidate
-          find /tmp/candidate -type f -name '*.apk' -print
-          APK=$(find /tmp/candidate -type f -name '*.apk' | head -1)
-          test -n "$APK"
-          cp "$APK" Xuper-60505.apk
+          cp /tmp/candidate/Xuper-6.2.4-VOD-VersionIdentity-60505-655.apk Xuper-stable.apk
+          echo "${EXPECTED_SHA}  Xuper-stable.apk" | sha256sum -c -
 
       - name: Run authenticated VOD probe on Android 16
         uses: reactivecircus/android-emulator-runner@v2
@@ -67,13 +67,13 @@ jobs:
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
-          script: bash tools/authenticated_vod_probe.sh Xuper-60505.apk
+          script: bash tools/authenticated_vod_probe.sh Xuper-stable.apk
 
       - name: Upload authenticated diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: xuper-authenticated-vod-diagnostics
+          name: xuper-authenticated-vod-diagnostics-stable
           path: diagnostics-auth-vod/**
           retention-days: 3
           if-no-files-found: warn
