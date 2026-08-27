@@ -30,7 +30,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          yes | sdkmanager 'build-tools;35.0.0' >/dev/null
+          sdkmanager 'build-tools;35.0.0' >/dev/null
           echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
 
       - name: Recover exact stable 6.2.4 checkpoint
