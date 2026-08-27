@@ -38,6 +38,7 @@ jobs:
             'https://github.com/skylot/jadx/releases/download/v1.5.5/jadx-1.5.5.zip' \
             -o work/jadx.zip
           unzip -q work/jadx.zip -d work/jadx
+          chmod +x work/jadx/bin/jadx work/jadx/bin/jadx-gui || true
           work/jadx/bin/jadx --no-res --show-bad-code --comments-level debug \
             -d work/src work/stable.apk > out/jadx-console.txt 2>&1 || true
           mkdir -p out/classes
