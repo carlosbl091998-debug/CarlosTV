@@ -1,0 +1,33 @@
+name: Export Android Build Tools 35
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/build-tools35-trigger.txt'
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: android-actions/setup-android@v3
+      - name: Install Build Tools 35
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager 'build-tools;35.0.0' >/dev/null
+          BT="$ANDROID_HOME/build-tools/35.0.0"
+          test -x "$BT/zipalign"
+          test -f "$BT/lib/apksigner.jar"
+          mkdir -p out
+          cp "$BT/zipalign" out/
+          cp "$BT/apksigner" out/
+          cp "$BT/lib/apksigner.jar" out/
+          sha256sum out/* | tee out/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-build-tools35-signing
+          path: out/
+          if-no-files-found: error
+          retention-days: 1
