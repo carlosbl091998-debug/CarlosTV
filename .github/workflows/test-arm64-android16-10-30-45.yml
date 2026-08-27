@@ -1,0 +1,142 @@
+name: Test ARM64 Android 16 10-30-45
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/test-arm64-android16-10-30-45.yml'
+
+jobs:
+  arm64-test:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    env:
+      ARTIFACT_ID: '9633216673'
+      PACKAGE: com.msandroid.mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install emulator and ARM64 Android 16 image
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platform-tools' 'emulator' 'system-images;android-36;google_apis;arm64-v8a'
+
+      - name: Recover candidate APK from GitHub artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p incoming
+          curl -fL --retry 4 --retry-all-errors \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
+            -o /tmp/candidate.zip
+          unzip -q /tmp/candidate.zip -d incoming
+          APK=$(find incoming -type f -name '*.apk' | head -1)
+          test -n "$APK"
+          cp "$APK" candidate.apk
+          sha256sum candidate.apk | tee candidate-sha256.txt
+
+      - name: Create ARM64 AVD
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo no | avdmanager create avd \
+            -n arm64_api36 \
+            -k 'system-images;android-36;google_apis;arm64-v8a' \
+            -d pixel_6 \
+            --force
+
+      - name: Start ARM64 emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostics
+          nohup emulator -avd arm64_api36 \
+            -no-window -noaudio -no-boot-anim \
+            -no-snapshot -gpu swiftshader_indirect \
+            -camera-back none -camera-front none \
+            > diagnostics/emulator.txt 2>&1 &
+          echo $! > diagnostics/emulator.pid
+          adb wait-for-device
+          for i in $(seq 1 180); do
+            BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+            [ "$BOOT" = '1' ] && break
+            sleep 2
+          done
+          test "$(adb shell getprop sys.boot_completed | tr -d '\r')" = '1'
+          adb shell getprop ro.product.cpu.abi | tee diagnostics/device-abi.txt
+          grep -q '^arm64-v8a$' diagnostics/device-abi.txt
+          adb shell getprop ro.build.version.sdk | tee diagnostics/sdk.txt
+          grep -q '^36$' diagnostics/sdk.txt
+
+      - name: Install launch and enforce 10 30 45 second liveness
+        id: runtime
+        shell: bash
+        continue-on-error: true
+        run: |
+          set +e
+          mkdir -p diagnostics
+          adb uninstall "$PACKAGE" >/dev/null 2>&1 || true
+          adb install -g candidate.apk > diagnostics/install.txt 2>&1
+          INSTALL_RC=$?
+          cat diagnostics/install.txt
+          if [ $INSTALL_RC -ne 0 ] || ! grep -q 'Success' diagnostics/install.txt; then
+            echo INSTALL_FAIL > diagnostics/result.txt
+            exit 1
+          fi
+
+          adb logcat -c
+          adb shell monkey -p "$PACKAGE" -c android.intent.category.LAUNCHER 1 > diagnostics/launch.txt 2>&1
+          sleep 10
+          adb shell pidof "$PACKAGE" | tr -d '\r[:space:]' > diagnostics/pid10.txt
+          if [ ! -s diagnostics/pid10.txt ]; then echo FAIL_AT_10 > diagnostics/result.txt; exit 1; fi
+
+          sleep 20
+          adb shell pidof "$PACKAGE" | tr -d '\r[:space:]' > diagnostics/pid30.txt
+          if [ ! -s diagnostics/pid30.txt ]; then echo FAIL_AT_30 > diagnostics/result.txt; exit 1; fi
+
+          sleep 15
+          adb shell pidof "$PACKAGE" | tr -d '\r[:space:]' > diagnostics/pid45.txt
+          if [ ! -s diagnostics/pid45.txt ]; then echo FAIL_AT_45 > diagnostics/result.txt; exit 1; fi
+
+          echo PASS_45 > diagnostics/result.txt
+
+      - name: Capture crash diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          adb logcat -d -v threadtime > diagnostics/logcat-full.txt 2>&1
+          grep -Eai 'FATAL EXCEPTION|AndroidRuntime|SIGSEGV|signal 11|tombstone|UnsatisfiedLinkError|dlopen failed|linker|ijk|ffmpeg|libsdl|DEBUG' diagnostics/logcat-full.txt > diagnostics/logcat-crash.txt || true
+          adb shell dumpsys activity activities > diagnostics/activities.txt 2>&1 || true
+          adb shell dumpsys package "$PACKAGE" > diagnostics/package.txt 2>&1 || true
+          adb shell 'ls -l /data/tombstones 2>/dev/null' > diagnostics/tombstones-list.txt 2>&1 || true
+          adb shell 'cat /data/tombstones/tombstone_* 2>/dev/null' > diagnostics/tombstones.txt 2>&1 || true
+          adb shell pidof "$PACKAGE" > diagnostics/pid-final.txt 2>&1 || true
+          cat diagnostics/result.txt 2>/dev/null || true
+
+      - name: Upload ARM64 diagnostics and APK
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm64-api36-10-30-45-diagnostics
+          path: |
+            candidate.apk
+            candidate-sha256.txt
+            diagnostics/**
+          retention-days: 7
+
+      - name: Fail if liveness did not pass
+        if: always()
+        shell: bash
+        run: |
+          test -f diagnostics/result.txt
+          grep -q '^PASS_45$' diagnostics/result.txt
