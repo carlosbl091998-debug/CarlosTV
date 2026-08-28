@@ -64,6 +64,12 @@ jobs:
           file "$(command -v zipalign)" | tee zipalign-host-binary.txt
           file "$(command -v apksigner)" | tee apksigner-host-binary.txt
 
+          # The community ARM64 emulator validates ANDROID_HOME by requiring a
+          # platform-tools directory. Keep the native distro adb and expose it
+          # inside this SDK root instead of installing Google's x86_64 tools.
+          mkdir -p "$ANDROID_HOME/platform-tools"
+          ln -sf "$(command -v adb)" "$ANDROID_HOME/platform-tools/adb"
+
           EMU_URL='https://github.com/Changqing-JING/android-emulator-aarch64-linux/releases/download/v2.12.0-19097-g85fa07f04ef/sdk-repo-linux_aarch64-emulator-standalone-0.zip'
           curl -fL --retry 4 --retry-all-errors "$EMU_URL" -o /tmp/emulator-arm64.zip
           echo '67ce4f576687b067d9b36668405b86b9749745d67d31037616aac12c49c63a65  /tmp/emulator-arm64.zip' | sha256sum -c -
@@ -114,7 +120,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$ANDROID_AVD_HOME"
           echo no | avdmanager create avd -n arm64_api36 -k 'system-images;android-36;google_apis;arm64-v8a' -d pixel_6 --force
-          find "$ANDROID_AVD_HOME" -maxdepth 2 -type f -o -type d | sort | tee avd-files.txt
+          find "$ANDROID_AVD_HOME" -maxdepth 2 \( -type f -o -type d \) | sort | tee avd-files.txt
           "$ANDROID_HOME/emulator/emulator" -list-avds | tee avd-list.txt
           grep -qx 'arm64_api36' avd-list.txt
 
@@ -127,8 +133,8 @@ jobs:
           nohup "$ANDROID_HOME/emulator/emulator" -avd arm64_api36 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect $ACCEL_ARGS > emulator.log 2>&1 &
           echo $! > emulator.pid
           for i in $(seq 1 300); do
-            if adb devices | grep -q 'emulator-.*device'; then
-              BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+            if timeout 5 adb devices | grep -q 'emulator-.*device'; then
+              BOOT=$(timeout 5 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
               if [ "$BOOT" = '1' ]; then break; fi
             fi
             if ! kill -0 "$(cat emulator.pid)" 2>/dev/null; then
@@ -138,10 +144,10 @@ jobs:
             fi
             sleep 2
           done
-          test "$(adb shell getprop sys.boot_completed | tr -d '\r')" = '1'
-          adb shell getprop ro.product.cpu.abi | tee device-abi.txt
+          test "$(timeout 5 adb shell getprop sys.boot_completed | tr -d '\r')" = '1'
+          timeout 5 adb shell getprop ro.product.cpu.abi | tee device-abi.txt
           grep -q '^arm64-v8a$' device-abi.txt
-          adb shell getprop ro.build.version.sdk | tee device-sdk.txt
+          timeout 5 adb shell getprop ro.build.version.sdk | tee device-sdk.txt
           grep -q '^36$' device-sdk.txt
 
       - name: Enforce 10 30 45 second liveness
@@ -149,25 +155,25 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p runtime
-          adb uninstall "$PACKAGE" >/dev/null 2>&1 || true
-          adb install -g candidate.apk | tee runtime/install.txt
+          timeout 10 adb uninstall "$PACKAGE" >/dev/null 2>&1 || true
+          timeout 120 adb install -g candidate.apk | tee runtime/install.txt
           grep -q 'Success' runtime/install.txt
-          adb logcat -c
-          adb shell monkey -p "$PACKAGE" -c android.intent.category.LAUNCHER 1 > runtime/launch.txt 2>&1
+          timeout 10 adb logcat -c
+          timeout 10 adb shell monkey -p "$PACKAGE" -c android.intent.category.LAUNCHER 1 > runtime/launch.txt 2>&1
           sleep 3
-          INITIAL_PID=$(adb shell pidof "$PACKAGE" | tr -d '\r[:space:]')
+          INITIAL_PID=$(timeout 5 adb shell pidof "$PACKAGE" | tr -d '\r[:space:]')
           test -n "$INITIAL_PID"
           echo "$INITIAL_PID" | tee runtime/pid-initial.txt
           START=$(date +%s)
           for target in 10 30 45; do
             while [ $(( $(date +%s) - START )) -lt "$target" ]; do sleep 1; done
-            PID=$(adb shell pidof "$PACKAGE" | tr -d '\r[:space:]')
+            PID=$(timeout 5 adb shell pidof "$PACKAGE" | tr -d '\r[:space:]')
             printf '%s %s\n' "$target" "$PID" | tee -a runtime/pid-samples.txt
             test -n "$PID"
             test "$PID" = "$INITIAL_PID"
           done
-          adb logcat -d -v threadtime > runtime/logcat.txt
-          adb logcat -b crash -d -v threadtime > runtime/crash-buffer.txt || true
+          timeout 20 adb logcat -d -v threadtime > runtime/logcat.txt
+          timeout 20 adb logcat -b crash -d -v threadtime > runtime/crash-buffer.txt || true
           if grep -Eqi 'FATAL EXCEPTION|UnsatisfiedLinkError|SIGABRT|Fatal signal|SIGSEGV' runtime/logcat.txt runtime/crash-buffer.txt; then
             echo 'FATAL_RUNTIME_SIGNATURE_FOUND' | tee runtime/result.txt
             exit 74
@@ -180,11 +186,11 @@ jobs:
         run: |
           set +e
           mkdir -p runtime
-          adb exec-out screencap -p > runtime/final-screen.png 2>/dev/null || true
-          adb logcat -d -v threadtime > runtime/logcat-final.txt 2>/dev/null || true
-          adb logcat -b crash -d -v threadtime > runtime/crash-final.txt 2>/dev/null || true
-          adb shell dumpsys activity activities > runtime/activities.txt 2>/dev/null || true
-          adb shell pidof "$PACKAGE" > runtime/pid-final.txt 2>/dev/null || true
+          timeout 10 adb exec-out screencap -p > runtime/final-screen.png 2>/dev/null || true
+          timeout 10 adb logcat -d -v threadtime > runtime/logcat-final.txt 2>/dev/null || true
+          timeout 10 adb logcat -b crash -d -v threadtime > runtime/crash-final.txt 2>/dev/null || true
+          timeout 10 adb shell dumpsys activity activities > runtime/activities.txt 2>/dev/null || true
+          timeout 10 adb shell pidof "$PACKAGE" > runtime/pid-final.txt 2>/dev/null || true
 
       - name: Upload candidate and diagnostics
         if: always()
