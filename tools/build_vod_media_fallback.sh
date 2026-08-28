@@ -19,7 +19,7 @@ curl -fL --retry 4 --retry-all-errors -H "Authorization: Bearer ${GH_TOKEN}" -H 
 unzip -q "$WORK/base.zip" -d "$WORK/base"
 BASE_SRC=''
 while IFS= read -r f; do
-  if [ "$(shasum -a 256 "$f" | awk '{print $1}')" = "$BASE_SHA" ]; then BASE_SRC="$f"; break; fi
+  if [ "$(checksum "$f" | awk '{print $1}')" = "$BASE_SHA" ]; then BASE_SRC="$f"; break; fi
 done < <(find "$WORK/base" -type f -name '*.apk')
 test -n "$BASE_SRC"
 cp "$BASE_SRC" "$BASE"
@@ -36,7 +36,8 @@ checksum "$RUNTIME_DEX" | tee "$OUT/runtime019-sha256.txt"
 APKTOOL="$WORK/apktool.jar"
 curl -fL --retry 3 --retry-all-errors 'https://github.com/iBotPeaches/Apktool/releases/download/v2.11.1/apktool_2.11.1.jar' -o "$APKTOOL"
 
-# Disassemble only to recover the real mapper class from the stable runtime dump.
+# Decode a probe containing the recovered runtime DEX only to obtain the real mapper class.
+# Decoding does not invoke aapt/aapt2, so this is architecture-neutral.
 cp "$BASE" "$WORK/probe.apk"
 cp "$RUNTIME_DEX" "$WORK/classes2.dex"
 (cd "$WORK" && zip -q -u probe.apk classes2.dex)
@@ -45,9 +46,6 @@ TARGET=$(find "$WORK/probe-decoded" -type f -path '*/m6/g2$u.smali' | head -1)
 test -n "$TARGET"
 cp "$TARGET" "$OUT/g2-u-original.smali"
 
-# Static patch: once a TotalMovieList has a non-empty movieList, expose that source
-# through the three canonical keys expected by downstream 6.2.4 code. This removes
-# the old exact-quality gate (480p/720p/1080p) without any runtime instrumentation.
 python3 - "$TARGET" "$OUT/g2-u-patched.smali" <<'PY'
 import sys
 src, out = sys.argv[1:]
@@ -74,35 +72,26 @@ if grep -q 'String;->hashCode()I' "$OUT/g2-u-patched.smali"; then
   exit 31
 fi
 
-# Decode the untouched stable APK and add only the patched mapper class as a normal
-# secondary DEX. No VodFixProvider, Frida Gadget, config, or JS is added.
-java -jar "$APKTOOL" d -f "$BASE" -o "$WORK/decoded" > "$OUT/base-decode.txt" 2>&1
-mkdir -p "$WORK/decoded/smali_classes2/m6"
-cp "$OUT/g2-u-patched.smali" "$WORK/decoded/smali_classes2/m6/g2\$u.smali"
+# Assemble only the patched class into a secondary DEX. This deliberately avoids
+# rebuilding resources and therefore avoids any host-architecture dependency on aapt2.
+SMALI_JAR="$WORK/smali-fat.jar"
+curl -fL --retry 3 --retry-all-errors \
+  'https://github.com/baksmali/smali/releases/download/v3.0.9/smali-3.0.9-fat.jar' \
+  -o "$SMALI_JAR"
+mkdir -p "$WORK/smali/m6"
+cp "$OUT/g2-u-patched.smali" "$WORK/smali/m6/g2\$u.smali"
+java -jar "$SMALI_JAR" assemble "$WORK/smali" -o "$WORK/patched-classes2.dex" > "$OUT/smali-assemble.txt" 2>&1
+test -s "$WORK/patched-classes2.dex"
+checksum "$WORK/patched-classes2.dex" | tee "$OUT/patched-classes2-sha256.txt"
+strings "$WORK/patched-classes2.dex" | grep -F 'STATIC_VOD_FALLBACK' >/dev/null || true
 
-# Explicitly assert the output tree contains none of the previous Frida patch pieces.
-rm -rf "$WORK/decoded/smali/com/xuper/vodfix" "$WORK/decoded/smali_classes2/com/xuper/vodfix" 2>/dev/null || true
-find "$WORK/decoded/lib" -type f \( -name 'libgadget.so' -o -name 'libgadget.config.so' -o -name 'libgadget.script.so' \) -delete 2>/dev/null || true
-python3 - "$WORK/decoded/AndroidManifest.xml" <<'PY'
-import sys, xml.etree.ElementTree as ET
-p=sys.argv[1]; ns='{http://schemas.android.com/apk/res/android}'
-t=ET.parse(p); root=t.getroot(); app=root.find('application')
-changed=False
-for e in list(app.findall('provider')):
-    if e.get(ns+'name') == 'com.xuper.vodfix.VodFixProvider':
-        app.remove(e); changed=True
-if changed:
-    ET.register_namespace('android','http://schemas.android.com/apk/res/android')
-    t.write(p, encoding='utf-8', xml_declaration=True)
-PY
+# Inject the secondary DEX into the untouched stable APK, then align and re-sign.
+# No resource recompilation and no Frida/VodFixProvider components are involved.
+cp "$BASE" "$WORK/unsigned.apk"
+zip -q -d "$WORK/unsigned.apk" 'META-INF/*.RSA' 'META-INF/*.DSA' 'META-INF/*.EC' 'META-INF/*.SF' 'META-INF/MANIFEST.MF' >/dev/null 2>&1 || true
+cp "$WORK/patched-classes2.dex" "$WORK/classes2.dex"
+(cd "$WORK" && zip -q -u unsigned.apk classes2.dex)
 
-AAPT_ARGS=()
-if [ -n "${APKTOOL_AAPT:-}" ]; then
-  test -x "$APKTOOL_AAPT"
-  AAPT_ARGS=(-a "$APKTOOL_AAPT")
-  "$APKTOOL_AAPT" version | tee "$OUT/aapt2-used.txt"
-fi
-java -jar "$APKTOOL" b "${AAPT_ARGS[@]}" "$WORK/decoded" -o "$WORK/unsigned.apk" > "$OUT/build.txt" 2>&1
 KEYSTORE="$WORK/test.jks"
 keytool -genkeypair -noprompt -keystore "$KEYSTORE" -storepass android -keypass android -alias androiddebugkey -dname 'CN=Xuper Static VOD Fallback,O=Android,C=MX' -keyalg RSA -keysize 2048 -validity 10000 >/dev/null 2>&1
 APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
@@ -116,10 +105,11 @@ CANDIDATE="$OUT/Xuper-6.2.4-VOD-StaticFallback-NoFrida.apk"
 checksum "$CANDIDATE" | tee "$OUT/candidate-sha256.txt"
 
 unzip -l "$CANDIDATE" > "$OUT/package-files.txt"
+unzip -p "$CANDIDATE" classes2.dex > "$OUT/classes2-final.dex"
+checksum "$OUT/classes2-final.dex" | tee "$OUT/classes2-final-sha256.txt"
 if grep -Eqi 'libgadget|VodFixProvider' "$OUT/package-files.txt"; then
   echo 'FRIDA_COMPONENT_FOUND' >&2
   exit 32
 fi
-unzip -p "$CANDIDATE" classes2.dex | strings | grep -F 'STATIC_VOD_FALLBACK' >/dev/null || true
 
-echo 'STATIC_FALLBACK_BUILD_OK_NO_FRIDA' | tee "$OUT/build-result.txt"
+echo 'STATIC_FALLBACK_BUILD_OK_NO_FRIDA_NO_AAPT' | tee "$OUT/build-result.txt"
