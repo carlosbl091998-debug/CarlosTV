@@ -96,11 +96,19 @@ if changed:
     t.write(p, encoding='utf-8', xml_declaration=True)
 PY
 
-java -jar "$APKTOOL" b "$WORK/decoded" -o "$WORK/unsigned.apk" > "$OUT/build.txt" 2>&1
+AAPT_ARGS=()
+if [ -n "${APKTOOL_AAPT:-}" ]; then
+  test -x "$APKTOOL_AAPT"
+  AAPT_ARGS=(-a "$APKTOOL_AAPT")
+  "$APKTOOL_AAPT" version | tee "$OUT/aapt2-used.txt"
+fi
+java -jar "$APKTOOL" b "${AAPT_ARGS[@]}" "$WORK/decoded" -o "$WORK/unsigned.apk" > "$OUT/build.txt" 2>&1
 KEYSTORE="$WORK/test.jks"
 keytool -genkeypair -noprompt -keystore "$KEYSTORE" -storepass android -keypass android -alias androiddebugkey -dname 'CN=Xuper Static VOD Fallback,O=Android,C=MX' -keyalg RSA -keysize 2048 -validity 10000 >/dev/null 2>&1
 APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
 ZIPALIGN=$(find "$ANDROID_HOME/build-tools" -type f -name zipalign | sort -V | tail -1)
+test -n "$APKSIGNER"
+test -n "$ZIPALIGN"
 "$ZIPALIGN" -f 4 "$WORK/unsigned.apk" "$WORK/aligned.apk"
 CANDIDATE="$OUT/Xuper-6.2.4-VOD-StaticFallback-NoFrida.apk"
 "$APKSIGNER" sign --ks "$KEYSTORE" --ks-pass pass:android --key-pass pass:android --ks-key-alias androiddebugkey --out "$CANDIDATE" "$WORK/aligned.apk"
