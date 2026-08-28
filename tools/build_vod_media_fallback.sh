@@ -36,8 +36,6 @@ checksum "$RUNTIME_DEX" | tee "$OUT/runtime019-sha256.txt"
 APKTOOL="$WORK/apktool.jar"
 curl -fL --retry 3 --retry-all-errors 'https://github.com/iBotPeaches/Apktool/releases/download/v2.11.1/apktool_2.11.1.jar' -o "$APKTOOL"
 
-# Decode a probe containing the recovered runtime DEX only to obtain the real mapper class.
-# Decoding does not invoke aapt/aapt2, so this is architecture-neutral.
 cp "$BASE" "$WORK/probe.apk"
 cp "$RUNTIME_DEX" "$WORK/classes2.dex"
 (cd "$WORK" && zip -q -u probe.apk classes2.dex)
@@ -72,21 +70,16 @@ if grep -q 'String;->hashCode()I' "$OUT/g2-u-patched.smali"; then
   exit 31
 fi
 
-# Assemble only the patched class into a secondary DEX. This deliberately avoids
-# rebuilding resources and therefore avoids any host-architecture dependency on aapt2.
 SMALI_JAR="$WORK/smali-fat.jar"
 curl -fL --retry 3 --retry-all-errors \
-  'https://github.com/baksmali/smali/releases/download/v3.0.9/smali-3.0.9-fat.jar' \
+  'https://github.com/baksmali/smali/releases/download/3.0.9/smali-3.0.9-fat.jar' \
   -o "$SMALI_JAR"
 mkdir -p "$WORK/smali/m6"
 cp "$OUT/g2-u-patched.smali" "$WORK/smali/m6/g2\$u.smali"
 java -jar "$SMALI_JAR" assemble "$WORK/smali" -o "$WORK/patched-classes2.dex" > "$OUT/smali-assemble.txt" 2>&1
 test -s "$WORK/patched-classes2.dex"
 checksum "$WORK/patched-classes2.dex" | tee "$OUT/patched-classes2-sha256.txt"
-strings "$WORK/patched-classes2.dex" | grep -F 'STATIC_VOD_FALLBACK' >/dev/null || true
 
-# Inject the secondary DEX into the untouched stable APK, then align and re-sign.
-# No resource recompilation and no Frida/VodFixProvider components are involved.
 cp "$BASE" "$WORK/unsigned.apk"
 zip -q -d "$WORK/unsigned.apk" 'META-INF/*.RSA' 'META-INF/*.DSA' 'META-INF/*.EC' 'META-INF/*.SF' 'META-INF/MANIFEST.MF' >/dev/null 2>&1 || true
 cp "$WORK/patched-classes2.dex" "$WORK/classes2.dex"
