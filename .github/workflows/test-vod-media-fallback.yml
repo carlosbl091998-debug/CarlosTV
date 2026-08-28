@@ -1,4 +1,4 @@
-name: Probe static Xuper VOD mapper without Frida
+name: Validate static Xuper VOD fallback on native ARM64 Android 16
 
 on:
   workflow_dispatch:
@@ -9,12 +9,14 @@ on:
       - '.github/workflows/test-vod-media-fallback.yml'
 
 jobs:
-  static-probe:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+  build-and-test:
+    runs-on: macos-14
+    timeout-minutes: 40
     permissions:
       contents: read
       actions: read
+    env:
+      PACKAGE: com.msandroid.mobile
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v5
@@ -22,15 +24,118 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v3
-      - name: Extract static runtime VOD mapper
+
+      - name: Prepare native ARM64 Android 16 environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          uname -a | tee host.txt
+          test "$(uname -m)" = 'arm64'
+          sdkmanager 'platform-tools' 'emulator' 'build-tools;35.0.0' 'system-images;android-36;google_apis;arm64-v8a' >/dev/null
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/emulator" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
+
+      - name: Build static VOD fallback without Frida
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash tools/build_vod_media_fallback.sh
-      - name: Upload static mapper diagnostics
+        run: |
+          set -euo pipefail
+          bash tools/build_vod_media_fallback.sh
+          CANDIDATE='diagnostics-vod-media-fallback/Xuper-6.2.4-VOD-StaticFallback-NoFrida.apk'
+          test -s "$CANDIDATE"
+          cp "$CANDIDATE" candidate.apk
+          shasum -a 256 candidate.apk | tee candidate-sha256.txt
+          unzip -l candidate.apk > package-files.txt
+          if grep -Eqi 'libgadget|VodFixProvider' package-files.txt; then
+            echo 'FORBIDDEN_FRIDA_COMPONENT_FOUND' >&2
+            exit 41
+          fi
+
+      - name: Create ARM64 AVD
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo no | avdmanager create avd -n arm64_api36 -k 'system-images;android-36;google_apis;arm64-v8a' -d pixel_6 --force
+
+      - name: Start native ARM64 emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          nohup emulator -avd arm64_api36 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect -accel off > emulator.log 2>&1 &
+          echo $! > emulator.pid
+          adb wait-for-device
+          for i in $(seq 1 180); do
+            BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+            if [ "$BOOT" = '1' ]; then break; fi
+            sleep 2
+          done
+          test "$(adb shell getprop sys.boot_completed | tr -d '\r')" = '1'
+          adb shell getprop ro.product.cpu.abi | tee device-abi.txt
+          grep -q '^arm64-v8a$' device-abi.txt
+          adb shell getprop ro.build.version.sdk | tee device-sdk.txt
+          grep -q '^36$' device-sdk.txt
+
+      - name: Require same app process alive continuously for 60 seconds
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p runtime
+          adb uninstall "$PACKAGE" >/dev/null 2>&1 || true
+          adb install -g candidate.apk | tee runtime/install.txt
+          grep -q 'Success' runtime/install.txt
+          adb logcat -c
+          adb shell monkey -p "$PACKAGE" -c android.intent.category.LAUNCHER 1 > runtime/launch.txt 2>&1
+          sleep 5
+          INITIAL_PID=$(adb shell pidof "$PACKAGE" | tr -d '\r[:space:]')
+          test -n "$INITIAL_PID"
+          echo "$INITIAL_PID" | tee runtime/pid-initial.txt
+          for sec in 10 15 20 25 30 35 40 45 50 55 60; do
+            sleep 5
+            PID=$(adb shell pidof "$PACKAGE" | tr -d '\r[:space:]')
+            printf '%s %s\n' "$sec" "$PID" | tee -a runtime/pid-samples.txt
+            if [ -z "$PID" ]; then
+              echo "PROCESS_ABSENT_AT_${sec}S" | tee runtime/result.txt
+              exit 72
+            fi
+            if [ "$PID" != "$INITIAL_PID" ]; then
+              echo "PID_CHANGED_AT_${sec}S:${INITIAL_PID}->${PID}" | tee runtime/result.txt
+              exit 73
+            fi
+          done
+          adb logcat -d -v threadtime > runtime/logcat.txt
+          adb logcat -b crash -d -v threadtime > runtime/crash-buffer.txt || true
+          if grep -Eqi 'FATAL EXCEPTION|UnsatisfiedLinkError|SIGABRT|Fatal signal|SIGSEGV' runtime/logcat.txt runtime/crash-buffer.txt; then
+            echo 'FATAL_RUNTIME_SIGNATURE_FOUND' | tee runtime/result.txt
+            exit 74
+          fi
+          echo 'ANDROID16_NATIVE_ARM64_CONTINUOUS_60S_RUNTIME_OK' | tee runtime/result.txt
+
+      - name: Capture final diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p runtime
+          adb exec-out screencap -p > runtime/final-screen.png 2>/dev/null || true
+          adb logcat -d -v threadtime > runtime/logcat-final.txt 2>/dev/null || true
+          adb logcat -b crash -d -v threadtime > runtime/crash-final.txt 2>/dev/null || true
+          adb shell dumpsys activity activities > runtime/activities.txt 2>/dev/null || true
+          adb shell pidof "$PACKAGE" > runtime/pid-final.txt 2>/dev/null || true
+
+      - name: Upload candidate and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: xuper-vod-static-mapper-probe
-          path: diagnostics-vod-media-fallback/**
+          name: xuper-vod-static-fallback-native-arm64
+          path: |
+            candidate.apk
+            candidate-sha256.txt
+            host.txt
+            device-abi.txt
+            device-sdk.txt
+            emulator.log
+            diagnostics-vod-media-fallback/**
+            runtime/**
           retention-days: 7
