@@ -63,10 +63,8 @@ jobs:
           command -v apksigner | tee apksigner-path.txt
           file "$(command -v zipalign)" | tee zipalign-host-binary.txt
           file "$(command -v apksigner)" | tee apksigner-host-binary.txt
-
           mkdir -p "$ANDROID_HOME/platform-tools"
           ln -sf "$(command -v adb)" "$ANDROID_HOME/platform-tools/adb"
-
           EMU_URL='https://github.com/Changqing-JING/android-emulator-aarch64-linux/releases/download/v2.12.0-19097-g85fa07f04ef/sdk-repo-linux_aarch64-emulator-standalone-0.zip'
           curl -fL --retry 4 --retry-all-errors "$EMU_URL" -o /tmp/emulator-arm64.zip
           echo '67ce4f576687b067d9b36668405b86b9749745d67d31037616aac12c49c63a65  /tmp/emulator-arm64.zip' | sha256sum -c -
@@ -75,7 +73,6 @@ jobs:
           test -x "$ANDROID_HOME/emulator/emulator"
           file "$ANDROID_HOME/emulator/emulator" | tee emulator-binary.txt
           file "$ANDROID_HOME/emulator/emulator" | grep -Eqi 'ARM aarch64|ARM64|aarch64'
-
           cat > "$ANDROID_HOME/emulator/package.xml" <<'XML'
           <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
           <ns2:repository xmlns:ns2="http://schemas.android.com/repository/android/common/01" xmlns:ns3="http://schemas.android.com/repository/android/generic/01">
@@ -126,7 +123,7 @@ jobs:
         run: |
           set -euo pipefail
           ACCEL_ARGS='-accel off'
-          QEMU_ARGS='-qemu -machine gic-version=3'
+          QEMU_ARGS='-qemu -machine gic-version=3 -cpu cortex-a57'
           if [ -e /dev/kvm ]; then
             ACCEL_ARGS='-accel on'
             QEMU_ARGS=''
