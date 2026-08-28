@@ -87,10 +87,13 @@ cp "$WORK/patched-classes2.dex" "$WORK/classes2.dex"
 
 KEYSTORE="$WORK/test.jks"
 keytool -genkeypair -noprompt -keystore "$KEYSTORE" -storepass android -keypass android -alias androiddebugkey -dname 'CN=Xuper Static VOD Fallback,O=Android,C=MX' -keyalg RSA -keysize 2048 -validity 10000 >/dev/null 2>&1
-APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
-ZIPALIGN=$(find "$ANDROID_HOME/build-tools" -type f -name zipalign | sort -V | tail -1)
+APKSIGNER="$(command -v apksigner || true)"
+ZIPALIGN="$(command -v zipalign || true)"
+if [ -z "$APKSIGNER" ]; then APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1); fi
+if [ -z "$ZIPALIGN" ]; then ZIPALIGN=$(find "$ANDROID_HOME/build-tools" -type f -name zipalign | sort -V | tail -1); fi
 test -n "$APKSIGNER"
 test -n "$ZIPALIGN"
+file "$ZIPALIGN" | tee "$OUT/zipalign-binary.txt"
 "$ZIPALIGN" -f 4 "$WORK/unsigned.apk" "$WORK/aligned.apk"
 CANDIDATE="$OUT/Xuper-6.2.4-VOD-StaticFallback-NoFrida.apk"
 "$APKSIGNER" sign --ks "$KEYSTORE" --ks-pass pass:android --key-pass pass:android --ks-key-alias androiddebugkey --out "$CANDIDATE" "$WORK/aligned.apk"
