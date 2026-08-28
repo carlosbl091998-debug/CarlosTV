@@ -29,7 +29,8 @@ jobs:
         run: |
           set -euo pipefail
           SDKROOT="$HOME/android-sdk"
-          mkdir -p "$SDKROOT/cmdline-tools"
+          AVDROOT="$RUNNER_TEMP/android-avd"
+          mkdir -p "$SDKROOT/cmdline-tools" "$AVDROOT"
           curl -fL --retry 4 --retry-all-errors \
             'https://dl.google.com/android/repository/commandlinetools-linux-12266719_latest.zip' \
             -o /tmp/cmdline-tools.zip
@@ -40,8 +41,8 @@ jobs:
           mv /tmp/cmdline-tools-unpack/cmdline-tools "$SDKROOT/cmdline-tools/latest"
           echo "ANDROID_HOME=$SDKROOT" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$SDKROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_AVD_HOME=$AVDROOT" >> "$GITHUB_ENV"
           echo "$SDKROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-          echo "$SDKROOT/platform-tools" >> "$GITHUB_PATH"
           echo "$SDKROOT/emulator" >> "$GITHUB_PATH"
           "$SDKROOT/cmdline-tools/latest/bin/sdkmanager" --version | tee sdkmanager-version.txt
           yes | "$SDKROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
@@ -54,7 +55,10 @@ jobs:
           uname -m | tee host-arch.txt
           test "$(uname -m)" = 'aarch64'
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libpulse0 libnss3 libx11-6 libxcb1 libxcomposite1 libxcursor1 libxdamage1 libxi6 libxtst6 libdrm2 libgbm1 libxkbcommon0 zipalign apksigner
+          sudo apt-get install -y -qq adb libpulse0 libnss3 libx11-6 libxcb1 libxcomposite1 libxcursor1 libxdamage1 libxi6 libxtst6 libdrm2 libgbm1 libxkbcommon0 zipalign apksigner
+          command -v adb | tee adb-path.txt
+          file "$(command -v adb)" | tee adb-host-binary.txt
+          adb version | tee adb-version.txt
           command -v zipalign | tee zipalign-path.txt
           command -v apksigner | tee apksigner-path.txt
           file "$(command -v zipalign)" | tee zipalign-host-binary.txt
@@ -80,7 +84,7 @@ jobs:
           </ns2:repository>
           XML
           sdkmanager --list_installed | tee sdk-installed-before.txt
-          sdkmanager --install 'platform-tools' 'system-images;android-36;google_apis;arm64-v8a' >/dev/null
+          sdkmanager --install 'system-images;android-36;google_apis;arm64-v8a' >/dev/null
           sdkmanager --list_installed | tee sdk-installed-after.txt
           "$ANDROID_HOME/emulator/emulator" -version 2>&1 | tee emulator-version.txt
           "$ANDROID_HOME/emulator/emulator" -accel-check 2>&1 | tee accel-check.txt || true
@@ -108,7 +112,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "$ANDROID_AVD_HOME"
           echo no | avdmanager create avd -n arm64_api36 -k 'system-images;android-36;google_apis;arm64-v8a' -d pixel_6 --force
+          find "$ANDROID_AVD_HOME" -maxdepth 2 -type f -o -type d | sort | tee avd-files.txt
+          "$ANDROID_HOME/emulator/emulator" -list-avds | tee avd-list.txt
+          grep -qx 'arm64_api36' avd-list.txt
 
       - name: Start native ARM64 emulator
         shell: bash
@@ -191,6 +199,9 @@ jobs:
             sdk-installed-after.txt
             host.txt
             host-arch.txt
+            adb-path.txt
+            adb-host-binary.txt
+            adb-version.txt
             emulator-binary.txt
             emulator-version.txt
             accel-check.txt
@@ -199,6 +210,8 @@ jobs:
             apksigner-path.txt
             zipalign-host-binary.txt
             apksigner-host-binary.txt
+            avd-files.txt
+            avd-list.txt
             device-abi.txt
             device-sdk.txt
             emulator.log
