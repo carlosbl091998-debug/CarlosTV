@@ -23,17 +23,26 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
 
-      - name: Verify native ARM64 host and prepare build tools
+      - name: Verify native ARM64 host and prepare native Android tools
         shell: bash
         run: |
           set -euo pipefail
           uname -a | tee host.txt
           test "$(uname -m)" = 'aarch64'
-          sdkmanager 'platform-tools' 'build-tools;35.0.0' >/dev/null
-          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq adb apksigner zipalign unzip curl
+          export ANDROID_HOME="$HOME/android-sdk"
+          mkdir -p "$ANDROID_HOME/build-tools/35.0.0"
+          ln -sf "$(command -v apksigner)" "$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          ln -sf "$(command -v zipalign)" "$ANDROID_HOME/build-tools/35.0.0/zipalign"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "$(dirname "$(command -v adb)")" >> "$GITHUB_PATH"
           echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
+          file "$(command -v adb)" "$(command -v zipalign)" | tee native-tooling.txt
+          adb version | tee adb-version.txt
+          apksigner --version | tee apksigner-version.txt
+          zipalign -h > zipalign-help.txt 2>&1 || true
 
       - name: Build static VOD fallback without Frida
         shell: bash
@@ -75,6 +84,7 @@ jobs:
           adb -s 127.0.0.1:5555 shell getprop ro.product.cpu.abi | tee device-abi.txt
           grep -q '^arm64-v8a$' device-abi.txt
           adb -s 127.0.0.1:5555 shell getprop ro.build.version.sdk | tee device-sdk.txt
+          docker inspect redroid --format '{{.Architecture}}' | tee container-arch.txt
           docker logs redroid > runtime/redroid.log 2>&1 || true
 
       - name: Install launch and enforce 10 30 45 second liveness
@@ -132,8 +142,13 @@ jobs:
             candidate.apk
             candidate-sha256.txt
             host.txt
+            native-tooling.txt
+            adb-version.txt
+            apksigner-version.txt
+            zipalign-help.txt
             device-abi.txt
             device-sdk.txt
+            container-arch.txt
             diagnostics-vod-media-fallback/**
             runtime/**
           retention-days: 7
