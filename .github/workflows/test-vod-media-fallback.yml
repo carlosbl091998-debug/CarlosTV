@@ -83,13 +83,10 @@ jobs:
             </localPackage>
           </ns2:repository>
           XML
-          sdkmanager --list_installed | tee sdk-installed-before.txt
           sdkmanager --install 'system-images;android-36;google_apis;arm64-v8a' >/dev/null
-          sdkmanager --list_installed | tee sdk-installed-after.txt
           "$ANDROID_HOME/emulator/emulator" -version 2>&1 | tee emulator-version.txt
           "$ANDROID_HOME/emulator/emulator" -accel-check 2>&1 | tee accel-check.txt || true
           ls -l /dev/kvm 2>&1 | tee kvm.txt || true
-          if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm || true; fi
 
       - name: Build static VOD fallback without Frida
         shell: bash
@@ -114,7 +111,6 @@ jobs:
           set -euo pipefail
           mkdir -p "$ANDROID_AVD_HOME"
           echo no | avdmanager create avd -n arm64_api36 -k 'system-images;android-36;google_apis;arm64-v8a' -d pixel_6 --force
-          find "$ANDROID_AVD_HOME" -maxdepth 2 \( -type f -o -type d \) | sort | tee avd-files.txt
           "$ANDROID_HOME/emulator/emulator" -list-avds | tee avd-list.txt
           grep -qx 'arm64_api36' avd-list.txt
 
@@ -122,13 +118,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ACCEL_ARGS='-accel off'
-          QEMU_ARGS='-qemu -machine gic-version=3 -cpu cortex-a57'
-          if [ -e /dev/kvm ]; then
-            ACCEL_ARGS='-accel on'
-            QEMU_ARGS=''
-          fi
-          nohup "$ANDROID_HOME/emulator/emulator" -avd arm64_api36 -no-window -no-audio -no-snapshot -no-boot-anim -gpu off -feature -Vulkan -no-metrics $ACCEL_ARGS $QEMU_ARGS > emulator.log 2>&1 &
+          # Do not pass raw QEMU machine/cpu overrides. The community ARM64 emulator
+          # already selects the correct ranchu machine; those overrides caused a host
+          # segfault before ADB became available on ubuntu-24.04-arm.
+          nohup env -u LD_PRELOAD "$ANDROID_HOME/emulator/emulator" \
+            -avd arm64_api36 \
+            -no-window -no-audio -no-snapshot -no-boot-anim \
+            -gpu swiftshader_indirect -feature -Vulkan -no-metrics \
+            -accel off > emulator.log 2>&1 &
           echo $! > emulator.pid
           for i in $(seq 1 300); do
             if timeout 5 adb devices | grep -q 'emulator-.*device'; then
@@ -198,9 +195,6 @@ jobs:
           path: |
             candidate.apk
             candidate-sha256.txt
-            sdkmanager-version.txt
-            sdk-installed-before.txt
-            sdk-installed-after.txt
             host.txt
             host-arch.txt
             adb-path.txt
@@ -210,11 +204,6 @@ jobs:
             emulator-version.txt
             accel-check.txt
             kvm.txt
-            zipalign-path.txt
-            apksigner-path.txt
-            zipalign-host-binary.txt
-            apksigner-host-binary.txt
-            avd-files.txt
             avd-list.txt
             device-abi.txt
             device-sdk.txt
