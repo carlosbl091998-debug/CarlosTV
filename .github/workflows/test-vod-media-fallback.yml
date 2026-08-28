@@ -24,31 +24,28 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Locate preinstalled Android SDK
+      - name: Bootstrap Android command-line tools on ARM64
         shell: bash
         run: |
           set -euo pipefail
-          SDKROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
-          if [ -z "$SDKROOT" ]; then
-            for candidate in /usr/local/lib/android/sdk /opt/android-sdk /home/runner/.android/sdk; do
-              if [ -d "$candidate" ]; then SDKROOT="$candidate"; break; fi
-            done
-          fi
-          test -n "$SDKROOT"
-          test -d "$SDKROOT"
-          SDKMANAGER="$(find "$SDKROOT/cmdline-tools" -type f -name sdkmanager 2>/dev/null | sort -V | tail -1)"
-          AVDMANAGER="$(find "$SDKROOT/cmdline-tools" -type f -name avdmanager 2>/dev/null | sort -V | tail -1)"
-          test -x "$SDKMANAGER"
-          test -x "$AVDMANAGER"
-          CMDLINE_BIN="$(dirname "$SDKMANAGER")"
+          SDKROOT="$HOME/android-sdk"
+          mkdir -p "$SDKROOT/cmdline-tools"
+          curl -fL --retry 4 --retry-all-errors \
+            'https://dl.google.com/android/repository/commandlinetools-linux-12266719_latest.zip' \
+            -o /tmp/cmdline-tools.zip
+          rm -rf /tmp/cmdline-tools-unpack
+          mkdir -p /tmp/cmdline-tools-unpack
+          unzip -q /tmp/cmdline-tools.zip -d /tmp/cmdline-tools-unpack
+          rm -rf "$SDKROOT/cmdline-tools/latest"
+          mv /tmp/cmdline-tools-unpack/cmdline-tools "$SDKROOT/cmdline-tools/latest"
           echo "ANDROID_HOME=$SDKROOT" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$SDKROOT" >> "$GITHUB_ENV"
-          echo "$CMDLINE_BIN" >> "$GITHUB_PATH"
+          echo "$SDKROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           echo "$SDKROOT/platform-tools" >> "$GITHUB_PATH"
           echo "$SDKROOT/emulator" >> "$GITHUB_PATH"
           echo "$SDKROOT/build-tools/35.0.0" >> "$GITHUB_PATH"
-          printf 'SDKROOT=%s\nSDKMANAGER=%s\n' "$SDKROOT" "$SDKMANAGER" | tee sdk-location.txt
-          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKROOT/cmdline-tools/latest/bin/sdkmanager" --version | tee sdkmanager-version.txt
+          yes | "$SDKROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
 
       - name: Prepare native ARM64 Android 16 environment
         shell: bash
@@ -163,7 +160,7 @@ jobs:
           path: |
             candidate.apk
             candidate-sha256.txt
-            sdk-location.txt
+            sdkmanager-version.txt
             host.txt
             host-arch.txt
             accel-check.txt
