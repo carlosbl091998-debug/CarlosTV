@@ -64,9 +64,6 @@ jobs:
           file "$(command -v zipalign)" | tee zipalign-host-binary.txt
           file "$(command -v apksigner)" | tee apksigner-host-binary.txt
 
-          # The community ARM64 emulator validates ANDROID_HOME by requiring a
-          # platform-tools directory. Keep the native distro adb and expose it
-          # inside this SDK root instead of installing Google's x86_64 tools.
           mkdir -p "$ANDROID_HOME/platform-tools"
           ln -sf "$(command -v adb)" "$ANDROID_HOME/platform-tools/adb"
 
@@ -129,8 +126,12 @@ jobs:
         run: |
           set -euo pipefail
           ACCEL_ARGS='-accel off'
-          if [ -e /dev/kvm ]; then ACCEL_ARGS='-accel on'; fi
-          nohup "$ANDROID_HOME/emulator/emulator" -avd arm64_api36 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect $ACCEL_ARGS > emulator.log 2>&1 &
+          QEMU_ARGS='-qemu -machine gic-version=3'
+          if [ -e /dev/kvm ]; then
+            ACCEL_ARGS='-accel on'
+            QEMU_ARGS=''
+          fi
+          nohup "$ANDROID_HOME/emulator/emulator" -avd arm64_api36 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect $ACCEL_ARGS $QEMU_ARGS > emulator.log 2>&1 &
           echo $! > emulator.pid
           for i in $(seq 1 300); do
             if timeout 5 adb devices | grep -q 'emulator-.*device'; then
