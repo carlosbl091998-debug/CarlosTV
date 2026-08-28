@@ -31,21 +31,18 @@ jobs:
           uname -a | tee host.txt
           test "$(uname -m)" = 'aarch64'
           sudo apt-get update -qq
-          sudo apt-get install -y -qq adb apksigner zipalign aapt2 unzip curl
+          sudo apt-get install -y -qq adb apksigner zipalign unzip curl
           export ANDROID_HOME="$HOME/android-sdk"
           mkdir -p "$ANDROID_HOME/build-tools/35.0.0"
           cp "$(command -v apksigner)" "$ANDROID_HOME/build-tools/35.0.0/apksigner"
           cp "$(command -v zipalign)" "$ANDROID_HOME/build-tools/35.0.0/zipalign"
-          cp "$(command -v aapt2)" "$ANDROID_HOME/build-tools/35.0.0/aapt2"
-          chmod +x "$ANDROID_HOME/build-tools/35.0.0/apksigner" "$ANDROID_HOME/build-tools/35.0.0/zipalign" "$ANDROID_HOME/build-tools/35.0.0/aapt2"
+          chmod +x "$ANDROID_HOME/build-tools/35.0.0/apksigner" "$ANDROID_HOME/build-tools/35.0.0/zipalign"
           echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
-          echo "APKTOOL_AAPT=$ANDROID_HOME/build-tools/35.0.0/aapt2" >> "$GITHUB_ENV"
           echo "$(dirname "$(command -v adb)")" >> "$GITHUB_PATH"
           echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
-          file "$(command -v adb)" "$ANDROID_HOME/build-tools/35.0.0/zipalign" "$ANDROID_HOME/build-tools/35.0.0/aapt2" | tee native-tooling.txt
+          file "$(command -v adb)" "$ANDROID_HOME/build-tools/35.0.0/zipalign" | tee native-tooling.txt
           adb version | tee adb-version.txt
           apksigner --version | tee apksigner-version.txt
-          aapt2 version | tee aapt2-version.txt
           zipalign -h > zipalign-help.txt 2>&1 || true
 
       - name: Build static VOD fallback without Frida
@@ -88,7 +85,8 @@ jobs:
           timeout 5s adb -s 127.0.0.1:5555 shell getprop ro.product.cpu.abi | tee device-abi.txt
           grep -q '^arm64-v8a$' device-abi.txt
           timeout 5s adb -s 127.0.0.1:5555 shell getprop ro.build.version.sdk | tee device-sdk.txt
-          docker inspect redroid --format '{{.Architecture}}' | tee container-arch.txt
+          docker image inspect redroid/redroid:15.0.0-latest --format '{{.Architecture}}' | tee container-arch.txt
+          grep -q '^arm64$' container-arch.txt
           docker logs redroid > runtime/redroid.log 2>&1 || true
 
       - name: Install launch and enforce 10 30 45 second liveness
@@ -149,7 +147,6 @@ jobs:
             native-tooling.txt
             adb-version.txt
             apksigner-version.txt
-            aapt2-version.txt
             zipalign-help.txt
             device-abi.txt
             device-sdk.txt
