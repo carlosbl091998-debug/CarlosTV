@@ -88,7 +88,7 @@ jobs:
           nohup env -u LD_PRELOAD "$ANDROID_HOME/emulator/emulator" \
             -avd arm64_api36 \
             -no-window -no-audio -no-snapshot -no-boot-anim \
-            -gpu swiftshader_indirect -feature -Vulkan -no-metrics \
+            -gpu off -feature -Vulkan -no-metrics \
             -accel off \
             -qemu -cpu max -machine gic-version=3 > emulator.log 2>&1 &
           echo $! > emulator.pid
