@@ -66,7 +66,19 @@ jobs:
           file "$ANDROID_HOME/emulator/emulator" | tee emulator-binary.txt
           file "$ANDROID_HOME/emulator/emulator" | grep -Eqi 'ARM aarch64|ARM64|aarch64'
 
+          cat > "$ANDROID_HOME/emulator/package.xml" <<'XML'
+          <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+          <ns2:repository xmlns:ns2="http://schemas.android.com/repository/android/common/01" xmlns:ns3="http://schemas.android.com/repository/android/generic/01">
+            <localPackage path="emulator" obsolete="false">
+              <type-details xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="ns3:genericDetailsType"/>
+              <revision><major>36</major><minor>2</minor><micro>12</micro></revision>
+              <display-name>Android Emulator ARM64 Community Build</display-name>
+            </localPackage>
+          </ns2:repository>
+          XML
+          sdkmanager --list_installed | tee sdk-installed-before.txt
           sdkmanager --install 'platform-tools' 'build-tools;35.0.0' 'system-images;android-36;google_apis;arm64-v8a' >/dev/null
+          sdkmanager --list_installed | tee sdk-installed-after.txt
           "$ANDROID_HOME/emulator/emulator" -version 2>&1 | tee emulator-version.txt
           "$ANDROID_HOME/emulator/emulator" -accel-check 2>&1 | tee accel-check.txt || true
           ls -l /dev/kvm 2>&1 | tee kvm.txt || true
@@ -172,6 +184,8 @@ jobs:
             candidate.apk
             candidate-sha256.txt
             sdkmanager-version.txt
+            sdk-installed-before.txt
+            sdk-installed-after.txt
             host.txt
             host-arch.txt
             emulator-binary.txt
