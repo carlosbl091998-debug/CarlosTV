@@ -1,0 +1,65 @@
+name: Probe SecNeo protected payload provenance
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [xuper-vod-media-fallback]
+    paths:
+      - 'tools/probe_secneo_payload.py'
+      - '.github/workflows/probe-secneo-payload.yml'
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download stable APK and runtime DEX dump
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/base /tmp/runtime diagnostics-secneo
+          curl -fL --retry 4 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9623417943/zip" -o /tmp/base.zip
+          unzip -q /tmp/base.zip -d /tmp/base
+          BASE=''
+          while IFS= read -r f; do
+            if [ "$(sha256sum "$f" | awk '{print $1}')" = '8ba6eb4a13bdec2d8d8ab06a1502194f488ce58d9fb6de7feeb1c539ef0f7b4e' ]; then BASE="$f"; break; fi
+          done < <(find /tmp/base -type f -name '*.apk')
+          test -n "$BASE"
+          cp "$BASE" stable.apk
+          curl -fL --retry 4 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9635194139/zip" -o /tmp/runtime.zip
+          unzip -q /tmp/runtime.zip 'dex-all/runtime-019-5d2a62ef889d.dex' -d /tmp/runtime
+          cp /tmp/runtime/dex-all/runtime-019-5d2a62ef889d.dex runtime019.dex
+          sha256sum stable.apk runtime019.dex | tee diagnostics-secneo/input-sha256.txt
+      - name: Probe payload provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/probe_secneo_payload.py stable.apk runtime019.dex diagnostics-secneo | tee diagnostics-secneo/console.txt
+      - name: Scan native shell strings
+        shell: bash
+        run: |
+          set +e
+          mkdir -p /tmp/apk-unzip
+          unzip -q stable.apk -d /tmp/apk-unzip
+          find /tmp/apk-unzip/lib -type f -name '*.so' -print0 | while IFS= read -r -d '' f; do
+            echo "===== $f ====="
+            strings -a "$f" | grep -Eai 'dex|secneo|payload|odex|vdex|code_cache|files/|cache/|apk|aes|rc4|xor|decrypt|encrypt|checksum|sha1|md5' | head -n 400
+          done > diagnostics-secneo/native-interesting-strings.txt 2>&1
+          exit 0
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: secneo-payload-provenance
+          path: diagnostics-secneo/**
+          retention-days: 7
