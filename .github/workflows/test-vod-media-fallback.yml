@@ -23,7 +23,32 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
+
+      - name: Locate preinstalled Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          if [ -z "$SDKROOT" ]; then
+            for candidate in /usr/local/lib/android/sdk /opt/android-sdk /home/runner/.android/sdk; do
+              if [ -d "$candidate" ]; then SDKROOT="$candidate"; break; fi
+            done
+          fi
+          test -n "$SDKROOT"
+          test -d "$SDKROOT"
+          SDKMANAGER="$(find "$SDKROOT/cmdline-tools" -type f -name sdkmanager 2>/dev/null | sort -V | tail -1)"
+          AVDMANAGER="$(find "$SDKROOT/cmdline-tools" -type f -name avdmanager 2>/dev/null | sort -V | tail -1)"
+          test -x "$SDKMANAGER"
+          test -x "$AVDMANAGER"
+          CMDLINE_BIN="$(dirname "$SDKMANAGER")"
+          echo "ANDROID_HOME=$SDKROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDKROOT" >> "$GITHUB_ENV"
+          echo "$CMDLINE_BIN" >> "$GITHUB_PATH"
+          echo "$SDKROOT/platform-tools" >> "$GITHUB_PATH"
+          echo "$SDKROOT/emulator" >> "$GITHUB_PATH"
+          echo "$SDKROOT/build-tools/35.0.0" >> "$GITHUB_PATH"
+          printf 'SDKROOT=%s\nSDKMANAGER=%s\n' "$SDKROOT" "$SDKMANAGER" | tee sdk-location.txt
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
 
       - name: Prepare native ARM64 Android 16 environment
         shell: bash
@@ -34,10 +59,7 @@ jobs:
           test "$(uname -m)" = 'aarch64'
           sudo apt-get update -qq
           sudo apt-get install -y -qq libpulse0 libnss3 libx11-6 libxcb1 libxcomposite1 libxcursor1 libxdamage1 libxi6 libxtst6 libdrm2 libgbm1 libxkbcommon0
-          sdkmanager 'platform-tools' 'emulator' 'build-tools;35.0.0' 'system-images;android-36;google_apis;arm64-v8a' >/dev/null
-          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
-          echo "$ANDROID_HOME/emulator" >> "$GITHUB_PATH"
-          echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
+          sdkmanager --install 'platform-tools' 'emulator' 'build-tools;35.0.0' 'system-images;android-36;google_apis;arm64-v8a' >/dev/null
           "$ANDROID_HOME/emulator/emulator" -accel-check 2>&1 | tee accel-check.txt || true
           ls -l /dev/kvm 2>&1 | tee kvm.txt || true
           if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm || true; fi
@@ -141,6 +163,7 @@ jobs:
           path: |
             candidate.apk
             candidate-sha256.txt
+            sdk-location.txt
             host.txt
             host-arch.txt
             accel-check.txt
