@@ -1,0 +1,139 @@
+name: Validate Xuper VOD fallback on native ARM64 Android container
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [xuper-vod-media-fallback]
+    paths:
+      - 'tools/build_vod_media_fallback.sh'
+      - '.github/workflows/test-vod-fallback-redroid-arm64.yml'
+
+jobs:
+  arm64-redroid-test:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    env:
+      PACKAGE: com.msandroid.mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+
+      - name: Verify native ARM64 host and prepare build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          uname -a | tee host.txt
+          test "$(uname -m)" = 'aarch64'
+          sdkmanager 'platform-tools' 'build-tools;35.0.0' >/dev/null
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
+
+      - name: Build static VOD fallback without Frida
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash tools/build_vod_media_fallback.sh
+          CANDIDATE='diagnostics-vod-media-fallback/Xuper-6.2.4-VOD-StaticFallback-NoFrida.apk'
+          test -s "$CANDIDATE"
+          cp "$CANDIDATE" candidate.apk
+          sha256sum candidate.apk | tee candidate-sha256.txt
+          unzip -l candidate.apk > package-files.txt
+          if grep -Eqi 'libgadget|VodFixProvider' package-files.txt; then
+            echo 'FORBIDDEN_FRIDA_COMPONENT_FOUND' >&2
+            exit 41
+          fi
+
+      - name: Start native ARM64 Android container
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p runtime/redroid-data
+          docker pull redroid/redroid:15.0.0-latest
+          docker run -d --name redroid --privileged \
+            -v "$PWD/runtime/redroid-data:/data" \
+            -p 5555:5555 \
+            redroid/redroid:15.0.0-latest \
+            androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2400 \
+            androidboot.redroid_dpi=420
+          for i in $(seq 1 120); do
+            if adb connect 127.0.0.1:5555 >/dev/null 2>&1 && adb -s 127.0.0.1:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' | grep -qx '1'; then
+              break
+            fi
+            sleep 2
+          done
+          adb -s 127.0.0.1:5555 shell getprop sys.boot_completed | tr -d '\r' | grep -qx '1'
+          adb -s 127.0.0.1:5555 shell getprop ro.product.cpu.abi | tee device-abi.txt
+          grep -q '^arm64-v8a$' device-abi.txt
+          adb -s 127.0.0.1:5555 shell getprop ro.build.version.sdk | tee device-sdk.txt
+          docker logs redroid > runtime/redroid.log 2>&1 || true
+
+      - name: Install launch and enforce 10 30 45 second liveness
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEV='127.0.0.1:5555'
+          mkdir -p runtime
+          adb -s "$DEV" uninstall "$PACKAGE" >/dev/null 2>&1 || true
+          adb -s "$DEV" install -r -g candidate.apk | tee runtime/install.txt
+          grep -q 'Success' runtime/install.txt
+          adb -s "$DEV" logcat -c
+          adb -s "$DEV" shell monkey -p "$PACKAGE" -c android.intent.category.LAUNCHER 1 > runtime/launch.txt 2>&1
+          sleep 3
+          INITIAL_PID=$(adb -s "$DEV" shell pidof "$PACKAGE" | tr -d '\r[:space:]')
+          test -n "$INITIAL_PID"
+          echo "$INITIAL_PID" | tee runtime/pid-initial.txt
+          START=$(date +%s)
+          for target in 10 30 45; do
+            while [ $(( $(date +%s) - START )) -lt "$target" ]; do sleep 1; done
+            PID=$(adb -s "$DEV" shell pidof "$PACKAGE" | tr -d '\r[:space:]')
+            printf '%s %s\n' "$target" "$PID" | tee -a runtime/pid-samples.txt
+            test -n "$PID"
+            test "$PID" = "$INITIAL_PID"
+            FG=$(adb -s "$DEV" shell dumpsys activity activities | grep -m1 'mResumedActivity' || true)
+            printf '%s %s\n' "$target" "$FG" | tee -a runtime/foreground-samples.txt
+          done
+          adb -s "$DEV" logcat -d -v threadtime > runtime/logcat.txt
+          adb -s "$DEV" logcat -b crash -d -v threadtime > runtime/crash-buffer.txt || true
+          if grep -Eqi 'FATAL EXCEPTION|UnsatisfiedLinkError|Fatal signal|SIGSEGV|SIGABRT' runtime/logcat.txt runtime/crash-buffer.txt; then
+            echo 'FATAL_RUNTIME_SIGNATURE_FOUND' | tee runtime/result.txt
+            exit 74
+          fi
+          echo 'ARM64_ANDROID_CONTAINER_LIVENESS_10_30_45_OK' | tee runtime/result.txt
+
+      - name: Capture final diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          DEV='127.0.0.1:5555'
+          mkdir -p runtime
+          adb -s "$DEV" exec-out screencap -p > runtime/final-screen.png 2>/dev/null || true
+          adb -s "$DEV" logcat -d -v threadtime > runtime/logcat-final.txt 2>/dev/null || true
+          adb -s "$DEV" shell dumpsys activity activities > runtime/activities.txt 2>/dev/null || true
+          adb -s "$DEV" shell pidof "$PACKAGE" > runtime/pid-final.txt 2>/dev/null || true
+          docker logs redroid > runtime/redroid-final.log 2>&1 || true
+
+      - name: Upload candidate and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xuper-vod-static-fallback-redroid-arm64
+          path: |
+            candidate.apk
+            candidate-sha256.txt
+            host.txt
+            device-abi.txt
+            device-sdk.txt
+            diagnostics-vod-media-fallback/**
+            runtime/**
+          retention-days: 7
