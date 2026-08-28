@@ -47,7 +47,7 @@ jobs:
           "$SDKROOT/cmdline-tools/latest/bin/sdkmanager" --version | tee sdkmanager-version.txt
           yes | "$SDKROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
 
-      - name: Prepare native ARM64 Android 16 environment
+      - name: Install native Linux ARM64 emulator and Android 16 image
         shell: bash
         run: |
           set -euo pipefail
@@ -56,7 +56,18 @@ jobs:
           test "$(uname -m)" = 'aarch64'
           sudo apt-get update -qq
           sudo apt-get install -y -qq libpulse0 libnss3 libx11-6 libxcb1 libxcomposite1 libxcursor1 libxdamage1 libxi6 libxtst6 libdrm2 libgbm1 libxkbcommon0
-          sdkmanager --install 'platform-tools' 'emulator' 'build-tools;35.0.0' 'system-images;android-36;google_apis;arm64-v8a' >/dev/null
+
+          EMU_URL='https://github.com/Changqing-JING/android-emulator-aarch64-linux/releases/download/v2.12.0-19097-g85fa07f04ef/sdk-repo-linux_aarch64-emulator-standalone-0.zip'
+          curl -fL --retry 4 --retry-all-errors "$EMU_URL" -o /tmp/emulator-arm64.zip
+          echo '67ce4f576687b067d9b36668405b86b9749745d67d31037616aac12c49c63a65  /tmp/emulator-arm64.zip' | sha256sum -c -
+          rm -rf "$ANDROID_HOME/emulator"
+          unzip -q /tmp/emulator-arm64.zip -d "$ANDROID_HOME"
+          test -x "$ANDROID_HOME/emulator/emulator"
+          file "$ANDROID_HOME/emulator/emulator" | tee emulator-binary.txt
+          file "$ANDROID_HOME/emulator/emulator" | grep -Eqi 'ARM aarch64|ARM64|aarch64'
+
+          sdkmanager --install 'platform-tools' 'build-tools;35.0.0' 'system-images;android-36;google_apis;arm64-v8a' >/dev/null
+          "$ANDROID_HOME/emulator/emulator" -version 2>&1 | tee emulator-version.txt
           "$ANDROID_HOME/emulator/emulator" -accel-check 2>&1 | tee accel-check.txt || true
           ls -l /dev/kvm 2>&1 | tee kvm.txt || true
           if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm || true; fi
@@ -90,7 +101,7 @@ jobs:
           set -euo pipefail
           ACCEL_ARGS='-accel off'
           if [ -e /dev/kvm ]; then ACCEL_ARGS='-accel on'; fi
-          nohup emulator -avd arm64_api36 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect $ACCEL_ARGS > emulator.log 2>&1 &
+          nohup "$ANDROID_HOME/emulator/emulator" -avd arm64_api36 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect $ACCEL_ARGS > emulator.log 2>&1 &
           echo $! > emulator.pid
           for i in $(seq 1 300); do
             if adb devices | grep -q 'emulator-.*device'; then
@@ -163,6 +174,8 @@ jobs:
             sdkmanager-version.txt
             host.txt
             host-arch.txt
+            emulator-binary.txt
+            emulator-version.txt
             accel-check.txt
             kvm.txt
             device-abi.txt
