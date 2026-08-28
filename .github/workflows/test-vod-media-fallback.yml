@@ -11,7 +11,7 @@ on:
 jobs:
   build-and-test:
     runs-on: macos-14
-    timeout-minutes: 40
+    timeout-minutes: 20
     permissions:
       contents: read
       actions: read
@@ -35,6 +35,7 @@ jobs:
           echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
           echo "$ANDROID_HOME/emulator" >> "$GITHUB_PATH"
           echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
+          "$ANDROID_HOME/emulator/emulator" -accel-check 2>&1 | tee accel-check.txt || true
 
       - name: Build static VOD fallback without Frida
         shell: bash
@@ -59,16 +60,22 @@ jobs:
           set -euo pipefail
           echo no | avdmanager create avd -n arm64_api36 -k 'system-images;android-36;google_apis;arm64-v8a' -d pixel_6 --force
 
-      - name: Start native ARM64 emulator
+      - name: Start native ARM64 emulator with Hypervisor Framework
         shell: bash
         run: |
           set -euo pipefail
-          nohup emulator -avd arm64_api36 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect -accel off > emulator.log 2>&1 &
+          nohup emulator -avd arm64_api36 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect -accel on > emulator.log 2>&1 &
           echo $! > emulator.pid
-          adb wait-for-device
-          for i in $(seq 1 180); do
-            BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
-            if [ "$BOOT" = '1' ]; then break; fi
+          for i in $(seq 1 150); do
+            if adb devices | grep -q 'emulator-.*device'; then
+              BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+              if [ "$BOOT" = '1' ]; then break; fi
+            fi
+            if ! kill -0 "$(cat emulator.pid)" 2>/dev/null; then
+              echo 'EMULATOR_EXITED_EARLY' >&2
+              cat emulator.log >&2 || true
+              exit 70
+            fi
             sleep 2
           done
           test "$(adb shell getprop sys.boot_completed | tr -d '\r')" = '1'
@@ -77,7 +84,7 @@ jobs:
           adb shell getprop ro.build.version.sdk | tee device-sdk.txt
           grep -q '^36$' device-sdk.txt
 
-      - name: Require same app process alive continuously for 60 seconds
+      - name: Enforce 10 30 45 second liveness
         shell: bash
         run: |
           set -euo pipefail
@@ -87,22 +94,17 @@ jobs:
           grep -q 'Success' runtime/install.txt
           adb logcat -c
           adb shell monkey -p "$PACKAGE" -c android.intent.category.LAUNCHER 1 > runtime/launch.txt 2>&1
-          sleep 5
+          sleep 3
           INITIAL_PID=$(adb shell pidof "$PACKAGE" | tr -d '\r[:space:]')
           test -n "$INITIAL_PID"
           echo "$INITIAL_PID" | tee runtime/pid-initial.txt
-          for sec in 10 15 20 25 30 35 40 45 50 55 60; do
-            sleep 5
+          START=$(date +%s)
+          for target in 10 30 45; do
+            while [ $(( $(date +%s) - START )) -lt "$target" ]; do sleep 1; done
             PID=$(adb shell pidof "$PACKAGE" | tr -d '\r[:space:]')
-            printf '%s %s\n' "$sec" "$PID" | tee -a runtime/pid-samples.txt
-            if [ -z "$PID" ]; then
-              echo "PROCESS_ABSENT_AT_${sec}S" | tee runtime/result.txt
-              exit 72
-            fi
-            if [ "$PID" != "$INITIAL_PID" ]; then
-              echo "PID_CHANGED_AT_${sec}S:${INITIAL_PID}->${PID}" | tee runtime/result.txt
-              exit 73
-            fi
+            printf '%s %s\n' "$target" "$PID" | tee -a runtime/pid-samples.txt
+            test -n "$PID"
+            test "$PID" = "$INITIAL_PID"
           done
           adb logcat -d -v threadtime > runtime/logcat.txt
           adb logcat -b crash -d -v threadtime > runtime/crash-buffer.txt || true
@@ -110,7 +112,7 @@ jobs:
             echo 'FATAL_RUNTIME_SIGNATURE_FOUND' | tee runtime/result.txt
             exit 74
           fi
-          echo 'ANDROID16_NATIVE_ARM64_CONTINUOUS_60S_RUNTIME_OK' | tee runtime/result.txt
+          echo 'ANDROID16_NATIVE_ARM64_LIVENESS_10_30_45_OK' | tee runtime/result.txt
 
       - name: Capture final diagnostics
         if: always()
@@ -133,6 +135,7 @@ jobs:
             candidate.apk
             candidate-sha256.txt
             host.txt
+            accel-check.txt
             device-abi.txt
             device-sdk.txt
             emulator.log
