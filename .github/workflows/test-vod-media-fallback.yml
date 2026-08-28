@@ -10,8 +10,8 @@ on:
 
 jobs:
   build-and-test:
-    runs-on: macos-14
-    timeout-minutes: 20
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
     permissions:
       contents: read
       actions: read
@@ -30,12 +30,17 @@ jobs:
         run: |
           set -euo pipefail
           uname -a | tee host.txt
-          test "$(uname -m)" = 'arm64'
+          uname -m | tee host-arch.txt
+          test "$(uname -m)" = 'aarch64'
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libpulse0 libnss3 libx11-6 libxcb1 libxcomposite1 libxcursor1 libxdamage1 libxi6 libxtst6 libdrm2 libgbm1 libxkbcommon0
           sdkmanager 'platform-tools' 'emulator' 'build-tools;35.0.0' 'system-images;android-36;google_apis;arm64-v8a' >/dev/null
           echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
           echo "$ANDROID_HOME/emulator" >> "$GITHUB_PATH"
           echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
           "$ANDROID_HOME/emulator/emulator" -accel-check 2>&1 | tee accel-check.txt || true
+          ls -l /dev/kvm 2>&1 | tee kvm.txt || true
+          if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm || true; fi
 
       - name: Build static VOD fallback without Frida
         shell: bash
@@ -47,7 +52,7 @@ jobs:
           CANDIDATE='diagnostics-vod-media-fallback/Xuper-6.2.4-VOD-StaticFallback-NoFrida.apk'
           test -s "$CANDIDATE"
           cp "$CANDIDATE" candidate.apk
-          shasum -a 256 candidate.apk | tee candidate-sha256.txt
+          sha256sum candidate.apk | tee candidate-sha256.txt
           unzip -l candidate.apk > package-files.txt
           if grep -Eqi 'libgadget|VodFixProvider' package-files.txt; then
             echo 'FORBIDDEN_FRIDA_COMPONENT_FOUND' >&2
@@ -60,13 +65,15 @@ jobs:
           set -euo pipefail
           echo no | avdmanager create avd -n arm64_api36 -k 'system-images;android-36;google_apis;arm64-v8a' -d pixel_6 --force
 
-      - name: Start native ARM64 emulator with Hypervisor Framework
+      - name: Start native ARM64 emulator
         shell: bash
         run: |
           set -euo pipefail
-          nohup emulator -avd arm64_api36 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect -accel on > emulator.log 2>&1 &
+          ACCEL_ARGS='-accel off'
+          if [ -e /dev/kvm ]; then ACCEL_ARGS='-accel on'; fi
+          nohup emulator -avd arm64_api36 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect $ACCEL_ARGS > emulator.log 2>&1 &
           echo $! > emulator.pid
-          for i in $(seq 1 150); do
+          for i in $(seq 1 300); do
             if adb devices | grep -q 'emulator-.*device'; then
               BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
               if [ "$BOOT" = '1' ]; then break; fi
@@ -135,7 +142,9 @@ jobs:
             candidate.apk
             candidate-sha256.txt
             host.txt
+            host-arch.txt
             accel-check.txt
+            kvm.txt
             device-abi.txt
             device-sdk.txt
             emulator.log
