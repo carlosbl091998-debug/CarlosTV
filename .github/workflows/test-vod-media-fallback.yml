@@ -128,7 +128,7 @@ jobs:
             ACCEL_ARGS='-accel on'
             QEMU_ARGS=''
           fi
-          nohup "$ANDROID_HOME/emulator/emulator" -avd arm64_api36 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect $ACCEL_ARGS $QEMU_ARGS > emulator.log 2>&1 &
+          nohup "$ANDROID_HOME/emulator/emulator" -avd arm64_api36 -no-window -no-audio -no-snapshot -no-boot-anim -gpu off -feature -Vulkan -no-metrics $ACCEL_ARGS $QEMU_ARGS > emulator.log 2>&1 &
           echo $! > emulator.pid
           for i in $(seq 1 300); do
             if timeout 5 adb devices | grep -q 'emulator-.*device'; then
