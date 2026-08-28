@@ -43,7 +43,6 @@ jobs:
           echo "$SDKROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           echo "$SDKROOT/platform-tools" >> "$GITHUB_PATH"
           echo "$SDKROOT/emulator" >> "$GITHUB_PATH"
-          echo "$SDKROOT/build-tools/35.0.0" >> "$GITHUB_PATH"
           "$SDKROOT/cmdline-tools/latest/bin/sdkmanager" --version | tee sdkmanager-version.txt
           yes | "$SDKROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
 
@@ -55,7 +54,11 @@ jobs:
           uname -m | tee host-arch.txt
           test "$(uname -m)" = 'aarch64'
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libpulse0 libnss3 libx11-6 libxcb1 libxcomposite1 libxcursor1 libxdamage1 libxi6 libxtst6 libdrm2 libgbm1 libxkbcommon0
+          sudo apt-get install -y -qq libpulse0 libnss3 libx11-6 libxcb1 libxcomposite1 libxcursor1 libxdamage1 libxi6 libxtst6 libdrm2 libgbm1 libxkbcommon0 zipalign apksigner
+          command -v zipalign | tee zipalign-path.txt
+          command -v apksigner | tee apksigner-path.txt
+          file "$(command -v zipalign)" | tee zipalign-host-binary.txt
+          file "$(command -v apksigner)" | tee apksigner-host-binary.txt
 
           EMU_URL='https://github.com/Changqing-JING/android-emulator-aarch64-linux/releases/download/v2.12.0-19097-g85fa07f04ef/sdk-repo-linux_aarch64-emulator-standalone-0.zip'
           curl -fL --retry 4 --retry-all-errors "$EMU_URL" -o /tmp/emulator-arm64.zip
@@ -77,7 +80,7 @@ jobs:
           </ns2:repository>
           XML
           sdkmanager --list_installed | tee sdk-installed-before.txt
-          sdkmanager --install 'platform-tools' 'build-tools;35.0.0' 'system-images;android-36;google_apis;arm64-v8a' >/dev/null
+          sdkmanager --install 'platform-tools' 'system-images;android-36;google_apis;arm64-v8a' >/dev/null
           sdkmanager --list_installed | tee sdk-installed-after.txt
           "$ANDROID_HOME/emulator/emulator" -version 2>&1 | tee emulator-version.txt
           "$ANDROID_HOME/emulator/emulator" -accel-check 2>&1 | tee accel-check.txt || true
@@ -192,6 +195,10 @@ jobs:
             emulator-version.txt
             accel-check.txt
             kvm.txt
+            zipalign-path.txt
+            apksigner-path.txt
+            zipalign-host-binary.txt
+            apksigner-host-binary.txt
             device-abi.txt
             device-sdk.txt
             emulator.log
