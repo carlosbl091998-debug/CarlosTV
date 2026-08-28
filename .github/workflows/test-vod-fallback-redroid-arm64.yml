@@ -34,12 +34,13 @@ jobs:
           sudo apt-get install -y -qq adb apksigner zipalign unzip curl
           export ANDROID_HOME="$HOME/android-sdk"
           mkdir -p "$ANDROID_HOME/build-tools/35.0.0"
-          ln -sf "$(command -v apksigner)" "$ANDROID_HOME/build-tools/35.0.0/apksigner"
-          ln -sf "$(command -v zipalign)" "$ANDROID_HOME/build-tools/35.0.0/zipalign"
+          cp "$(command -v apksigner)" "$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          cp "$(command -v zipalign)" "$ANDROID_HOME/build-tools/35.0.0/zipalign"
+          chmod +x "$ANDROID_HOME/build-tools/35.0.0/apksigner" "$ANDROID_HOME/build-tools/35.0.0/zipalign"
           echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
           echo "$(dirname "$(command -v adb)")" >> "$GITHUB_PATH"
           echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
-          file "$(command -v adb)" "$(command -v zipalign)" | tee native-tooling.txt
+          file "$(command -v adb)" "$ANDROID_HOME/build-tools/35.0.0/zipalign" | tee native-tooling.txt
           adb version | tee adb-version.txt
           apksigner --version | tee apksigner-version.txt
           zipalign -h > zipalign-help.txt 2>&1 || true
@@ -75,15 +76,15 @@ jobs:
             androidboot.redroid_height=2400 \
             androidboot.redroid_dpi=420
           for i in $(seq 1 120); do
-            if adb connect 127.0.0.1:5555 >/dev/null 2>&1 && adb -s 127.0.0.1:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' | grep -qx '1'; then
+            if adb connect 127.0.0.1:5555 >/dev/null 2>&1 && timeout 3s adb -s 127.0.0.1:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' | grep -qx '1'; then
               break
             fi
             sleep 2
           done
-          adb -s 127.0.0.1:5555 shell getprop sys.boot_completed | tr -d '\r' | grep -qx '1'
-          adb -s 127.0.0.1:5555 shell getprop ro.product.cpu.abi | tee device-abi.txt
+          timeout 5s adb -s 127.0.0.1:5555 shell getprop sys.boot_completed | tr -d '\r' | grep -qx '1'
+          timeout 5s adb -s 127.0.0.1:5555 shell getprop ro.product.cpu.abi | tee device-abi.txt
           grep -q '^arm64-v8a$' device-abi.txt
-          adb -s 127.0.0.1:5555 shell getprop ro.build.version.sdk | tee device-sdk.txt
+          timeout 5s adb -s 127.0.0.1:5555 shell getprop ro.build.version.sdk | tee device-sdk.txt
           docker inspect redroid --format '{{.Architecture}}' | tee container-arch.txt
           docker logs redroid > runtime/redroid.log 2>&1 || true
 
@@ -93,27 +94,27 @@ jobs:
           set -euo pipefail
           DEV='127.0.0.1:5555'
           mkdir -p runtime
-          adb -s "$DEV" uninstall "$PACKAGE" >/dev/null 2>&1 || true
-          adb -s "$DEV" install -r -g candidate.apk | tee runtime/install.txt
+          timeout 15s adb -s "$DEV" uninstall "$PACKAGE" >/dev/null 2>&1 || true
+          timeout 60s adb -s "$DEV" install -r -g candidate.apk | tee runtime/install.txt
           grep -q 'Success' runtime/install.txt
-          adb -s "$DEV" logcat -c
-          adb -s "$DEV" shell monkey -p "$PACKAGE" -c android.intent.category.LAUNCHER 1 > runtime/launch.txt 2>&1
+          timeout 5s adb -s "$DEV" logcat -c
+          timeout 10s adb -s "$DEV" shell monkey -p "$PACKAGE" -c android.intent.category.LAUNCHER 1 > runtime/launch.txt 2>&1
           sleep 3
-          INITIAL_PID=$(adb -s "$DEV" shell pidof "$PACKAGE" | tr -d '\r[:space:]')
+          INITIAL_PID=$(timeout 5s adb -s "$DEV" shell pidof "$PACKAGE" | tr -d '\r[:space:]')
           test -n "$INITIAL_PID"
           echo "$INITIAL_PID" | tee runtime/pid-initial.txt
           START=$(date +%s)
           for target in 10 30 45; do
             while [ $(( $(date +%s) - START )) -lt "$target" ]; do sleep 1; done
-            PID=$(adb -s "$DEV" shell pidof "$PACKAGE" | tr -d '\r[:space:]')
+            PID=$(timeout 5s adb -s "$DEV" shell pidof "$PACKAGE" | tr -d '\r[:space:]')
             printf '%s %s\n' "$target" "$PID" | tee -a runtime/pid-samples.txt
             test -n "$PID"
             test "$PID" = "$INITIAL_PID"
-            FG=$(adb -s "$DEV" shell dumpsys activity activities | grep -m1 'mResumedActivity' || true)
+            FG=$(timeout 5s adb -s "$DEV" shell dumpsys activity activities | grep -m1 'mResumedActivity' || true)
             printf '%s %s\n' "$target" "$FG" | tee -a runtime/foreground-samples.txt
           done
-          adb -s "$DEV" logcat -d -v threadtime > runtime/logcat.txt
-          adb -s "$DEV" logcat -b crash -d -v threadtime > runtime/crash-buffer.txt || true
+          timeout 10s adb -s "$DEV" logcat -d -v threadtime > runtime/logcat.txt || true
+          timeout 10s adb -s "$DEV" logcat -b crash -d -v threadtime > runtime/crash-buffer.txt || true
           if grep -Eqi 'FATAL EXCEPTION|UnsatisfiedLinkError|Fatal signal|SIGSEGV|SIGABRT' runtime/logcat.txt runtime/crash-buffer.txt; then
             echo 'FATAL_RUNTIME_SIGNATURE_FOUND' | tee runtime/result.txt
             exit 74
@@ -127,11 +128,11 @@ jobs:
           set +e
           DEV='127.0.0.1:5555'
           mkdir -p runtime
-          adb -s "$DEV" exec-out screencap -p > runtime/final-screen.png 2>/dev/null || true
-          adb -s "$DEV" logcat -d -v threadtime > runtime/logcat-final.txt 2>/dev/null || true
-          adb -s "$DEV" shell dumpsys activity activities > runtime/activities.txt 2>/dev/null || true
-          adb -s "$DEV" shell pidof "$PACKAGE" > runtime/pid-final.txt 2>/dev/null || true
-          docker logs redroid > runtime/redroid-final.log 2>&1 || true
+          timeout 5s adb -s "$DEV" exec-out screencap -p > runtime/final-screen.png 2>/dev/null || true
+          timeout 5s adb -s "$DEV" logcat -d -v threadtime > runtime/logcat-final.txt 2>/dev/null || true
+          timeout 5s adb -s "$DEV" shell dumpsys activity activities > runtime/activities.txt 2>/dev/null || true
+          timeout 5s adb -s "$DEV" shell pidof "$PACKAGE" > runtime/pid-final.txt 2>/dev/null || true
+          timeout 5s docker logs redroid > runtime/redroid-final.log 2>&1 || true
 
       - name: Upload candidate and diagnostics
         if: always()
