@@ -37,12 +37,20 @@ jobs:
           mkdir source && unzip -q source.zip -d source
           cp source/candidate.apk candidate.apk
           sha256sum candidate.apk | tee candidate-sha256.txt
-      - name: Start Android 16 ARM64 container
+      - name: Install Binder support and start Android 16 ARM64 container
         run: |
           set -euo pipefail
+          KREL="$(uname -r)"
+          apt-cache policy "linux-modules-extra-${KREL}" | tee binder-package-policy.txt || true
+          sudo apt-get install -y -qq "linux-modules-extra-${KREL}" >> binder-package-policy.txt 2>&1 || true
+          sudo depmod -a || true
           sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 | tee modprobe-binder.txt || true
           ls -la /dev/binder* /dev/*binder* 2>/dev/null | tee binder-devices.txt || true
           { cat /proc/filesystems; cat /proc/modules; } | grep -E 'binder|ashmem' | tee binder-host.txt || true
+          if ! grep -q binder /proc/filesystems && ! grep -q '^binder_linux ' /proc/modules; then
+            echo "BINDER_UNAVAILABLE" | tee binder-unavailable.txt
+            exit 71
+          fi
           docker pull redroid/redroid:16.0.0_64only-latest
           docker image inspect redroid/redroid:16.0.0_64only-latest --format '{{.Architecture}} {{.Os}}' | tee image-platform.txt
           grep -qx 'arm64 linux' image-platform.txt
@@ -125,6 +133,8 @@ jobs:
             candidate-sha256.txt
             host-uname.txt
             docker-version.txt
+            binder-package-policy.txt
+            binder-unavailable.txt
             modprobe-binder.txt
             binder-devices.txt
             binder-host.txt
