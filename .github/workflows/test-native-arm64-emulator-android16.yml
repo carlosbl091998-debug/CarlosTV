@@ -1,0 +1,114 @@
+name: Validate VOD candidate on native ARM64 Android 16 emulator
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [xuper-vod-media-fallback]
+    paths:
+      - '.github/workflows/test-native-arm64-emulator-android16.yml'
+
+jobs:
+  native-arm64-emulator:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    env:
+      PACKAGE: com.msandroid.mobile
+      SOURCE_ARTIFACT_ID: '9701400558'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare Android SDK and candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          uname -a | tee host-uname.txt
+          ls -l /dev/kvm 2>&1 | tee kvm.txt || true
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq curl unzip qemu-kvm libvirt-daemon-system libpulse0 libgl1 >/dev/null
+          curl -fL --retry 4 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${SOURCE_ARTIFACT_ID}/zip" \
+            -o source.zip
+          mkdir source && unzip -q source.zip -d source
+          cp source/candidate.apk candidate.apk
+          sha256sum candidate.apk | tee candidate-sha256.txt
+          mkdir -p "$HOME/android-sdk/cmdline-tools"
+          curl -fL --retry 4 --retry-all-errors \
+            https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip -o cmdline.zip
+          unzip -q cmdline.zip -d "$HOME/android-sdk/cmdline-tools"
+          mv "$HOME/android-sdk/cmdline-tools/cmdline-tools" "$HOME/android-sdk/cmdline-tools/latest"
+          echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$HOME/android-sdk/platform-tools" >> "$GITHUB_PATH"
+          echo "$HOME/android-sdk/emulator" >> "$GITHUB_PATH"
+          echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> "$GITHUB_ENV"
+      - name: Install Android 16 ARM64 image and create AVD
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "emulator" "platforms;android-36" "system-images;android-36;google_apis;arm64-v8a" | tee sdkmanager.txt
+          echo no | avdmanager create avd -n arm16 -k "system-images;android-36;google_apis;arm64-v8a" --device "pixel_7" --force
+          cat "$HOME/.android/avd/arm16.avd/config.ini" | tee avd-config.txt
+      - name: Boot Android 16 ARM64 emulator
+        run: |
+          set -euo pipefail
+          mkdir -p runtime
+          ACCEL="-accel off"
+          if [ -e /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then ACCEL="-accel on"; fi
+          echo "ACCEL=$ACCEL" | tee runtime/accel.txt
+          nohup emulator -avd arm16 -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect \
+            $ACCEL -memory 3072 -cores 2 -wipe-data -verbose > runtime/emulator.log 2>&1 &
+          echo $! > runtime/emulator.pid
+          adb start-server
+          timeout 900 bash -c 'until adb wait-for-device shell getprop sys.boot_completed 2>/dev/null | tr -d "\r" | grep -qx 1; do sleep 5; done'
+          adb shell getprop ro.product.cpu.abi | tee runtime/device-abi.txt
+          adb shell getprop ro.build.version.sdk | tee runtime/device-sdk.txt
+          adb shell getprop ro.build.version.release | tee runtime/device-release.txt
+          grep -qx arm64-v8a runtime/device-abi.txt
+          grep -qx 36 runtime/device-sdk.txt
+      - name: Install and enforce 10 30 45 second liveness
+        run: |
+          set -euo pipefail
+          adb install -r -g candidate.apk | tee runtime/install.txt
+          grep -q Success runtime/install.txt
+          adb logcat -c
+          adb shell monkey -p "$PACKAGE" -c android.intent.category.LAUNCHER 1 > runtime/launch.txt 2>&1
+          sleep 3
+          PID=$(adb shell pidof "$PACKAGE" | tr -d '\r[:space:]')
+          test -n "$PID"
+          echo "$PID" > runtime/pid-initial.txt
+          START=$(date +%s)
+          for T in 10 30 45; do
+            while [ $(( $(date +%s)-START )) -lt "$T" ]; do sleep 1; done
+            P=$(adb shell pidof "$PACKAGE" | tr -d '\r[:space:]')
+            echo "$T $P" | tee -a runtime/pid-samples.txt
+            test "$P" = "$PID"
+          done
+          adb logcat -d -v threadtime > runtime/logcat.txt
+          adb logcat -b crash -d -v threadtime > runtime/crash.txt || true
+          ! grep -Eqi 'FATAL EXCEPTION|UnsatisfiedLinkError|SIGABRT|Fatal signal|SIGSEGV' runtime/logcat.txt runtime/crash.txt
+          echo ANDROID16_NATIVE_ARM64_LIVENESS_10_30_45_OK | tee runtime/result.txt
+      - name: Capture diagnostics
+        if: always()
+        run: |
+          adb shell getprop > runtime/getprop.txt 2>/dev/null || true
+          adb logcat -d -v threadtime > runtime/logcat-final.txt 2>/dev/null || true
+          ps aux | grep -E '[e]mulator|[q]emu' > runtime/emulator-ps.txt 2>/dev/null || true
+      - name: Upload tested APK and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xuper-vod-native-arm64-emulator-android16
+          path: |
+            candidate.apk
+            candidate-sha256.txt
+            host-uname.txt
+            kvm.txt
+            sdkmanager.txt
+            avd-config.txt
+            runtime/**
+          retention-days: 7
