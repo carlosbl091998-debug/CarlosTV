@@ -81,16 +81,18 @@ jobs:
           "$ANDROID_HOME/emulator/emulator" -list-avds | tee avd-list.txt
           grep -qx arm64_api36 avd-list.txt
 
-      - name: Boot ARM64 emulator with TCG explicit CPU and GICv3
+      - name: Boot ARM64 emulator with default TCG machine
         shell: bash
+        env:
+          ANDROID_EMULATOR_DISABLE_CRASH_REPORTING: '1'
+          ANDROID_EMULATOR_USE_SYSTEM_LIBS: '1'
         run: |
           set -euo pipefail
           nohup env -u LD_PRELOAD "$ANDROID_HOME/emulator/emulator" \
             -avd arm64_api36 \
             -no-window -no-audio -no-snapshot -no-boot-anim \
-            -gpu off -feature -Vulkan -no-metrics \
-            -accel off \
-            -qemu -cpu max -machine gic-version=3 > emulator.log 2>&1 &
+            -gpu swiftshader_indirect -feature -Vulkan -no-metrics \
+            -accel off > emulator.log 2>&1 &
           echo $! > emulator.pid
           for i in $(seq 1 360); do
             if timeout 5 adb devices | grep -q 'emulator-.*device'; then
