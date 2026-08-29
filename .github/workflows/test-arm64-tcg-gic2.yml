@@ -1,4 +1,4 @@
-name: Validate VOD candidate on Apple Silicon ARM64 Android 16
+name: Validate VOD candidate on native Linux ARM64 Android 16
 
 on:
   workflow_dispatch:
@@ -8,8 +8,8 @@ on:
       - '.github/workflows/test-arm64-tcg-gic2.yml'
 
 jobs:
-  arm64-macos-liveness:
-    runs-on: macos-15
+  arm64-linux-liveness:
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     permissions:
       contents: read
@@ -24,10 +24,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          test "$(uname -m)" = arm64
+          test "$(uname -m)" = aarch64
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq unzip curl >/dev/null
           SDKROOT="$HOME/android-sdk"; AVDROOT="$RUNNER_TEMP/android-avd"
           mkdir -p "$SDKROOT/cmdline-tools" "$AVDROOT"
-          curl -fL --retry 4 --retry-all-errors https://dl.google.com/android/repository/commandlinetools-mac-12266719_latest.zip -o /tmp/tools.zip
+          curl -fL --retry 4 --retry-all-errors https://dl.google.com/android/repository/commandlinetools-linux-12266719_latest.zip -o /tmp/tools.zip
           unzip -q /tmp/tools.zip -d /tmp/tools && mv /tmp/tools/cmdline-tools "$SDKROOT/cmdline-tools/latest"
           echo "ANDROID_HOME=$SDKROOT" >> "$GITHUB_ENV"; echo "ANDROID_SDK_ROOT=$SDKROOT" >> "$GITHUB_ENV"; echo "ANDROID_AVD_HOME=$AVDROOT" >> "$GITHUB_ENV"
           echo "$SDKROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"; echo "$SDKROOT/emulator" >> "$GITHUB_PATH"; echo "$SDKROOT/platform-tools" >> "$GITHUB_PATH"
@@ -37,15 +39,19 @@ jobs:
           mkdir source && unzip -q source.zip -d source && cp source/candidate.apk candidate.apk
           sha256sum candidate.apk | tee candidate-sha256.txt
           "$SDKROOT/emulator/emulator" -version | tee emulator-version.txt
+          ls -l /dev/kvm | tee kvm.txt || true
       - name: Create AVD
         run: |
           set -euo pipefail
           echo no | avdmanager create avd -n arm64_api36 -k 'system-images;android-36;google_apis;arm64-v8a' -d pixel_6 --force
-      - name: Boot ARM64 guest with native Hypervisor Framework
+      - name: Boot ARM64 guest
         run: |
           set -euo pipefail
-          "$ANDROID_HOME/emulator/emulator" -accel-check | tee accel-check.txt
-          nohup "$ANDROID_HOME/emulator/emulator" -avd arm64_api36 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect -no-metrics -memory 2048 -cores 2 -ports 5554,5555 -skip-adb-auth -accel on > emulator.log 2>&1 &
+          "$ANDROID_HOME/emulator/emulator" -accel-check | tee accel-check.txt || true
+          ACCEL=off
+          if [ -e /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then ACCEL=on; fi
+          echo "$ACCEL" | tee accel-mode.txt
+          nohup "$ANDROID_HOME/emulator/emulator" -avd arm64_api36 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect -no-metrics -memory 2048 -cores 2 -ports 5554,5555 -skip-adb-auth -accel "$ACCEL" > emulator.log 2>&1 &
           echo $! > emulator.pid
           START=$(date +%s)
           for i in $(seq 1 300); do
@@ -86,12 +92,14 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: xuper-vod-static-fallback-arm64-macos-hvf
+          name: xuper-vod-static-fallback-arm64-linux
           path: |
             candidate.apk
             candidate-sha256.txt
             emulator-version.txt
+            kvm.txt
             accel-check.txt
+            accel-mode.txt
             emulator.log
             boot-time.txt
             device-abi.txt
