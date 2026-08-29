@@ -52,7 +52,7 @@ jobs:
       - name: Boot native ARM64 guest under TCG GICv2
         run: |
           set -euo pipefail
-          nohup "$ANDROID_HOME/emulator/emulator" -avd arm64_api36 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect -no-metrics -accel off -ports 5554,5555 -skip-adb-auth -qemu -machine gic-version=2 > emulator.log 2>&1 &
+          nohup "$ANDROID_HOME/emulator/emulator" -avd arm64_api36 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect -no-metrics -accel off -ports 5554,5555 -skip-adb-auth -qemu -cpu max -machine gic-version=2 > emulator.log 2>&1 &
           echo $! > emulator.pid
           for i in $(seq 1 540); do
             if adb -s emulator-5554 get-state 2>/dev/null | grep -qx device; then
