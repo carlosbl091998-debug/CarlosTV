@@ -41,11 +41,11 @@ jobs:
         run: |
           set -euo pipefail
           echo no | avdmanager create avd -n arm64_api36 -k 'system-images;android-36;google_apis;arm64-v8a' -d pixel_6 --force
-      - name: Boot ARM64 guest using TCG software acceleration
+      - name: Boot ARM64 guest using explicit QEMU TCG
         run: |
           set -euo pipefail
           "$ANDROID_HOME/emulator/emulator" -accel-check | tee accel-check.txt || true
-          nohup "$ANDROID_HOME/emulator/emulator" -avd arm64_api36 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect -no-metrics -accel off -memory 2048 -cores 2 -ports 5554,5555 -skip-adb-auth > emulator.log 2>&1 &
+          nohup "$ANDROID_HOME/emulator/emulator" -avd arm64_api36 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect -no-metrics -memory 2048 -cores 2 -ports 5554,5555 -skip-adb-auth -qemu -accel tcg,thread=multi > emulator.log 2>&1 &
           echo $! > emulator.pid
           START=$(date +%s)
           for i in $(seq 1 600); do
