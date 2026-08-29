@@ -41,14 +41,14 @@ jobs:
         run: |
           set -euo pipefail
           echo no | avdmanager create avd -n arm64_api36 -k 'system-images;android-36;google_apis;arm64-v8a' -d pixel_6 --force
-      - name: Boot ARM64 guest using explicit QEMU TCG
+      - name: Boot ARM64 guest with native Hypervisor Framework
         run: |
           set -euo pipefail
-          "$ANDROID_HOME/emulator/emulator" -accel-check | tee accel-check.txt || true
-          nohup "$ANDROID_HOME/emulator/emulator" -avd arm64_api36 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect -no-metrics -memory 2048 -cores 2 -ports 5554,5555 -skip-adb-auth -qemu -accel tcg,thread=multi > emulator.log 2>&1 &
+          "$ANDROID_HOME/emulator/emulator" -accel-check | tee accel-check.txt
+          nohup "$ANDROID_HOME/emulator/emulator" -avd arm64_api36 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect -no-metrics -memory 2048 -cores 2 -ports 5554,5555 -skip-adb-auth -accel on > emulator.log 2>&1 &
           echo $! > emulator.pid
           START=$(date +%s)
-          for i in $(seq 1 600); do
+          for i in $(seq 1 300); do
             if adb -s emulator-5554 get-state 2>/dev/null | grep -qx device; then
               BOOT=$(adb -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r');
               if [ "$BOOT" = 1 ]; then echo "BOOT_SECONDS=$(( $(date +%s)-START ))" | tee boot-time.txt; break; fi
@@ -86,7 +86,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: xuper-vod-static-fallback-arm64-macos-tcg
+          name: xuper-vod-static-fallback-arm64-macos-hvf
           path: |
             candidate.apk
             candidate-sha256.txt
