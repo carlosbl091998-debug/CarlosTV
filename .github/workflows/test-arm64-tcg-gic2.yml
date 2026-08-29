@@ -1,4 +1,4 @@
-name: Validate VOD candidate on ARM64 Android 16 TCG GICv2
+name: Validate VOD candidate on native ARM64 Android 16 KVM
 
 on:
   workflow_dispatch:
@@ -8,9 +8,9 @@ on:
       - '.github/workflows/test-arm64-tcg-gic2.yml'
 
 jobs:
-  arm64-gic2-liveness:
+  arm64-kvm-liveness:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
+    timeout-minutes: 20
     permissions:
       contents: read
       actions: read
@@ -25,6 +25,8 @@ jobs:
         run: |
           set -euo pipefail
           test "$(uname -m)" = aarch64
+          test -e /dev/kvm || { echo 'NO_KVM_DEVICE'; ls -l /dev/kvm || true; exit 71; }
+          sudo chmod 666 /dev/kvm
           SDKROOT="$HOME/android-sdk"; AVDROOT="$RUNNER_TEMP/android-avd"
           mkdir -p "$SDKROOT/cmdline-tools" "$AVDROOT"
           curl -fL --retry 4 --retry-all-errors https://dl.google.com/android/repository/commandlinetools-linux-12266719_latest.zip -o /tmp/tools.zip
@@ -49,16 +51,17 @@ jobs:
         run: |
           set -euo pipefail
           echo no | avdmanager create avd -n arm64_api36 -k 'system-images;android-36;google_apis;arm64-v8a' -d pixel_6 --force
-      - name: Boot native ARM64 guest under TCG GICv2
+      - name: Boot native ARM64 guest with KVM
         run: |
           set -euo pipefail
-          nohup "$ANDROID_HOME/emulator/emulator" -avd arm64_api36 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect -no-metrics -accel off -ports 5554,5555 -skip-adb-auth -qemu -cpu max -machine gic-version=2 > emulator.log 2>&1 &
+          "$ANDROID_HOME/emulator/emulator" -accel-check | tee accel-check.txt || true
+          nohup "$ANDROID_HOME/emulator/emulator" -avd arm64_api36 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect -no-metrics -accel on -ports 5554,5555 -skip-adb-auth > emulator.log 2>&1 &
           echo $! > emulator.pid
-          for i in $(seq 1 540); do
+          for i in $(seq 1 240); do
             if adb -s emulator-5554 get-state 2>/dev/null | grep -qx device; then
               BOOT=$(adb -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'); [ "$BOOT" = 1 ] && break
             fi
-            kill -0 "$(cat emulator.pid)" 2>/dev/null || { tail -200 emulator.log; exit 70; }
+            kill -0 "$(cat emulator.pid)" 2>/dev/null || { tail -300 emulator.log; exit 70; }
             sleep 2
           done
           test "$(adb -s emulator-5554 shell getprop sys.boot_completed | tr -d '\r')" = 1
@@ -81,15 +84,16 @@ jobs:
           adb -s emulator-5554 logcat -d -v threadtime > runtime/logcat.txt
           adb -s emulator-5554 logcat -b crash -d -v threadtime > runtime/crash.txt || true
           ! grep -Eqi 'FATAL EXCEPTION|UnsatisfiedLinkError|SIGABRT|Fatal signal|SIGSEGV' runtime/logcat.txt runtime/crash.txt
-          echo ANDROID16_NATIVE_ARM64_LIVENESS_10_30_45_OK | tee runtime/result.txt
+          echo ANDROID16_NATIVE_ARM64_KVM_LIVENESS_10_30_45_OK | tee runtime/result.txt
       - name: Upload diagnostics and tested APK
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: xuper-vod-static-fallback-arm64-gic2
+          name: xuper-vod-static-fallback-arm64-kvm
           path: |
             candidate.apk
             candidate-sha256.txt
+            accel-check.txt
             emulator.log
             device-abi.txt
             device-sdk.txt
