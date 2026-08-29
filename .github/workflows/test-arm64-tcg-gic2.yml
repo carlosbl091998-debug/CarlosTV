@@ -1,4 +1,4 @@
-name: Validate VOD candidate on native ARM64 Android 16 KVM
+name: Validate VOD candidate on Apple Silicon ARM64 Android 16
 
 on:
   workflow_dispatch:
@@ -8,9 +8,9 @@ on:
       - '.github/workflows/test-arm64-tcg-gic2.yml'
 
 jobs:
-  arm64-kvm-liveness:
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 20
+  arm64-macos-liveness:
+    runs-on: macos-15
+    timeout-minutes: 35
     permissions:
       contents: read
       actions: read
@@ -19,49 +19,53 @@ jobs:
       SOURCE_ARTIFACT_ID: '9701400558'
     steps:
       - uses: actions/checkout@v4
-      - name: Bootstrap native ARM64 Android emulator and APK
+      - name: Bootstrap Android SDK and candidate APK
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          test "$(uname -m)" = aarch64
-          test -e /dev/kvm || { echo 'NO_KVM_DEVICE'; ls -l /dev/kvm || true; exit 71; }
-          sudo chmod 666 /dev/kvm
+          test "$(uname -m)" = arm64
           SDKROOT="$HOME/android-sdk"; AVDROOT="$RUNNER_TEMP/android-avd"
           mkdir -p "$SDKROOT/cmdline-tools" "$AVDROOT"
-          curl -fL --retry 4 --retry-all-errors https://dl.google.com/android/repository/commandlinetools-linux-12266719_latest.zip -o /tmp/tools.zip
+          curl -fL --retry 4 --retry-all-errors https://dl.google.com/android/repository/commandlinetools-mac-12266719_latest.zip -o /tmp/tools.zip
           unzip -q /tmp/tools.zip -d /tmp/tools && mv /tmp/tools/cmdline-tools "$SDKROOT/cmdline-tools/latest"
           echo "ANDROID_HOME=$SDKROOT" >> "$GITHUB_ENV"; echo "ANDROID_SDK_ROOT=$SDKROOT" >> "$GITHUB_ENV"; echo "ANDROID_AVD_HOME=$AVDROOT" >> "$GITHUB_ENV"
-          echo "$SDKROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"; echo "$SDKROOT/emulator" >> "$GITHUB_PATH"
-          sudo apt-get update -qq && sudo apt-get install -y -qq adb libpulse0 libnss3 libx11-6 libxcb1 libxcomposite1 libxcursor1 libxdamage1 libxi6 libxtst6 libdrm2 libgbm1 libxkbcommon0
-          mkdir -p "$SDKROOT/platform-tools"; ln -sf "$(command -v adb)" "$SDKROOT/platform-tools/adb"
-          curl -fL --retry 4 --retry-all-errors https://github.com/Changqing-JING/android-emulator-aarch64-linux/releases/download/v2.12.0-19097-g85fa07f04ef/sdk-repo-linux_aarch64-emulator-standalone-0.zip -o /tmp/emu.zip
-          echo '67ce4f576687b067d9b36668405b86b9749745d67d31037616aac12c49c63a65  /tmp/emu.zip' | sha256sum -c -
-          unzip -q /tmp/emu.zip -d "$SDKROOT"
-          cat > "$SDKROOT/emulator/package.xml" <<'XML'
-          <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-          <ns2:repository xmlns:ns2="http://schemas.android.com/repository/android/common/01" xmlns:ns3="http://schemas.android.com/repository/android/generic/01"><localPackage path="emulator" obsolete="false"><type-details xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="ns3:genericDetailsType"/><revision><major>36</major><minor>2</minor><micro>12</micro></revision><display-name>Android Emulator ARM64 Community Build</display-name></localPackage></ns2:repository>
-          XML
+          echo "$SDKROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"; echo "$SDKROOT/emulator" >> "$GITHUB_PATH"; echo "$SDKROOT/platform-tools" >> "$GITHUB_PATH"
           yes | "$SDKROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
-          "$SDKROOT/cmdline-tools/latest/bin/sdkmanager" --install 'system-images;android-36;google_apis;arm64-v8a' >/dev/null
+          "$SDKROOT/cmdline-tools/latest/bin/sdkmanager" --install 'platform-tools' 'emulator' 'system-images;android-36;google_apis;arm64-v8a' >/dev/null
           curl -fL --retry 4 --retry-all-errors -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${SOURCE_ARTIFACT_ID}/zip" -o source.zip
           mkdir source && unzip -q source.zip -d source && cp source/candidate.apk candidate.apk
           sha256sum candidate.apk | tee candidate-sha256.txt
+          "$SDKROOT/emulator/emulator" -version | tee emulator-version.txt
       - name: Create AVD
         run: |
           set -euo pipefail
           echo no | avdmanager create avd -n arm64_api36 -k 'system-images;android-36;google_apis;arm64-v8a' -d pixel_6 --force
-      - name: Boot native ARM64 guest with KVM
+          cat >> "$ANDROID_AVD_HOME/arm64_api36.avd/config.ini" <<'EOF'
+          hw.ramSize=1536
+          vm.heapSize=256
+          hw.gpu.enabled=no
+          hw.audioInput=no
+          hw.audioOutput=no
+          disk.dataPartition.size=2G
+          EOF
+      - name: Boot native ARM64 guest in software mode
         run: |
           set -euo pipefail
           "$ANDROID_HOME/emulator/emulator" -accel-check | tee accel-check.txt || true
-          nohup "$ANDROID_HOME/emulator/emulator" -avd arm64_api36 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect -no-metrics -accel on -ports 5554,5555 -skip-adb-auth > emulator.log 2>&1 &
+          nohup "$ANDROID_HOME/emulator/emulator" -avd arm64_api36 -no-window -no-audio -no-snapshot -no-boot-anim -gpu off -no-metrics -accel off -memory 1536 -cores 2 -ports 5554,5555 -skip-adb-auth > emulator.log 2>&1 &
           echo $! > emulator.pid
-          for i in $(seq 1 240); do
+          START=$(date +%s)
+          for i in $(seq 1 900); do
             if adb -s emulator-5554 get-state 2>/dev/null | grep -qx device; then
-              BOOT=$(adb -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'); [ "$BOOT" = 1 ] && break
+              BOOT=$(adb -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r');
+              if [ "$BOOT" = 1 ]; then
+                echo "BOOT_SECONDS=$(( $(date +%s)-START ))" | tee boot-time.txt
+                break
+              fi
             fi
-            kill -0 "$(cat emulator.pid)" 2>/dev/null || { tail -300 emulator.log; exit 70; }
+            kill -0 "$(cat emulator.pid)" 2>/dev/null || { tail -400 emulator.log; exit 70; }
+            if [ $((i % 60)) -eq 0 ]; then echo "still booting: $((i*2))s"; tail -40 emulator.log || true; fi
             sleep 2
           done
           test "$(adb -s emulator-5554 shell getprop sys.boot_completed | tr -d '\r')" = 1
@@ -80,21 +84,28 @@ jobs:
           sleep 3
           PID=$(adb -s emulator-5554 shell pidof "$PACKAGE" | tr -d '\r[:space:]'); test -n "$PID"; echo "$PID" > runtime/pid-initial.txt
           START=$(date +%s)
-          for T in 10 30 45; do while [ $(( $(date +%s)-START )) -lt "$T" ]; do sleep 1; done; P=$(adb -s emulator-5554 shell pidof "$PACKAGE" | tr -d '\r[:space:]'); echo "$T $P" | tee -a runtime/pid-samples.txt; test "$P" = "$PID"; done
+          for T in 10 30 45; do
+            while [ $(( $(date +%s)-START )) -lt "$T" ]; do sleep 1; done
+            P=$(adb -s emulator-5554 shell pidof "$PACKAGE" | tr -d '\r[:space:]')
+            echo "$T $P" | tee -a runtime/pid-samples.txt
+            test "$P" = "$PID"
+          done
           adb -s emulator-5554 logcat -d -v threadtime > runtime/logcat.txt
           adb -s emulator-5554 logcat -b crash -d -v threadtime > runtime/crash.txt || true
           ! grep -Eqi 'FATAL EXCEPTION|UnsatisfiedLinkError|SIGABRT|Fatal signal|SIGSEGV' runtime/logcat.txt runtime/crash.txt
-          echo ANDROID16_NATIVE_ARM64_KVM_LIVENESS_10_30_45_OK | tee runtime/result.txt
+          echo ANDROID16_ARM64_LIVENESS_10_30_45_OK | tee runtime/result.txt
       - name: Upload diagnostics and tested APK
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: xuper-vod-static-fallback-arm64-kvm
+          name: xuper-vod-static-fallback-arm64-macos
           path: |
             candidate.apk
             candidate-sha256.txt
+            emulator-version.txt
             accel-check.txt
             emulator.log
+            boot-time.txt
             device-abi.txt
             device-sdk.txt
             runtime/**
