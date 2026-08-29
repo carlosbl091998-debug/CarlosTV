@@ -1,0 +1,130 @@
+name: Validate VOD candidate on Redroid Android 16 ARM64
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [xuper-vod-media-fallback]
+    paths:
+      - '.github/workflows/test-redroid-arm64-android16.yml'
+
+jobs:
+  redroid-arm64-liveness:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read
+    env:
+      PACKAGE: com.msandroid.mobile
+      SOURCE_ARTIFACT_ID: '9701400558'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare host, adb and candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq android-tools-adb curl unzip >/dev/null
+          uname -a | tee host-uname.txt
+          docker version | tee docker-version.txt
+          curl -fL --retry 4 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${SOURCE_ARTIFACT_ID}/zip" \
+            -o source.zip
+          mkdir source && unzip -q source.zip -d source
+          cp source/candidate.apk candidate.apk
+          sha256sum candidate.apk | tee candidate-sha256.txt
+      - name: Start Android 16 ARM64 container
+        run: |
+          set -euo pipefail
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>/dev/null || true
+          ls -l /dev/binder* /dev/*binder* 2>/dev/null | tee binder-devices.txt || true
+          grep -E 'binder|ashmem' /proc/filesystems /proc/modules 2>/dev/null | tee binder-host.txt || true
+          docker pull redroid/redroid:16.0.0_64only-latest
+          docker image inspect redroid/redroid:16.0.0_64only-latest --format '{{.Architecture}} {{.Os}}' | tee image-platform.txt
+          grep -qx 'arm64 linux' image-platform.txt
+          docker run -d --rm --privileged \
+            --name redroid16 \
+            -p 5555:5555 \
+            redroid/redroid:16.0.0_64only-latest \
+            androidboot.redroid_gpu_mode=guest \
+            androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2400 \
+            androidboot.redroid_dpi=420 | tee container-id.txt
+          docker logs redroid16 > redroid.log 2>&1 || true
+      - name: Wait for Android 16 and verify ARM64
+        run: |
+          set -euo pipefail
+          START=$(date +%s)
+          READY=0
+          adb start-server
+          for i in $(seq 1 180); do
+            adb connect 127.0.0.1:5555 >/dev/null 2>&1 || true
+            if adb -s 127.0.0.1:5555 get-state 2>/dev/null | grep -qx device; then
+              BOOT=$(adb -s 127.0.0.1:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+              if [ "$BOOT" = 1 ]; then READY=1; echo "BOOT_SECONDS=$(( $(date +%s)-START ))" | tee boot-time.txt; break; fi
+            fi
+            docker ps --format '{{.Names}}' | grep -qx redroid16 || { docker logs redroid16 || true; exit 70; }
+            sleep 2
+          done
+          test "$READY" = 1
+          adb -s 127.0.0.1:5555 shell getprop ro.product.cpu.abi | tee device-abi.txt
+          grep -qx arm64-v8a device-abi.txt
+          adb -s 127.0.0.1:5555 shell getprop ro.build.version.sdk | tee device-sdk.txt
+          grep -qx 36 device-sdk.txt
+          adb -s 127.0.0.1:5555 shell getprop ro.build.version.release | tee device-release.txt
+      - name: Install and enforce 10 30 45 second liveness
+        run: |
+          set -euo pipefail
+          mkdir -p runtime
+          adb -s 127.0.0.1:5555 install -r -g candidate.apk | tee runtime/install.txt
+          grep -q Success runtime/install.txt
+          adb -s 127.0.0.1:5555 logcat -c
+          adb -s 127.0.0.1:5555 shell monkey -p "$PACKAGE" -c android.intent.category.LAUNCHER 1 > runtime/launch.txt 2>&1
+          sleep 3
+          PID=$(adb -s 127.0.0.1:5555 shell pidof "$PACKAGE" | tr -d '\r[:space:]')
+          test -n "$PID"
+          echo "$PID" > runtime/pid-initial.txt
+          START=$(date +%s)
+          for T in 10 30 45; do
+            while [ $(( $(date +%s)-START )) -lt "$T" ]; do sleep 1; done
+            P=$(adb -s 127.0.0.1:5555 shell pidof "$PACKAGE" | tr -d '\r[:space:]')
+            echo "$T $P" | tee -a runtime/pid-samples.txt
+            test "$P" = "$PID"
+          done
+          adb -s 127.0.0.1:5555 logcat -d -v threadtime > runtime/logcat.txt
+          adb -s 127.0.0.1:5555 logcat -b crash -d -v threadtime > runtime/crash.txt || true
+          ! grep -Eqi 'FATAL EXCEPTION|UnsatisfiedLinkError|SIGABRT|Fatal signal|SIGSEGV' runtime/logcat.txt runtime/crash.txt
+          echo ANDROID16_ARM64_LIVENESS_10_30_45_OK | tee runtime/result.txt
+      - name: Capture final diagnostics
+        if: always()
+        run: |
+          docker logs redroid16 > redroid.log 2>&1 || true
+          docker inspect redroid16 > redroid-inspect.json 2>/dev/null || true
+          adb -s 127.0.0.1:5555 shell getprop > device-getprop.txt 2>/dev/null || true
+      - name: Upload tested APK and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xuper-vod-static-fallback-redroid16-arm64
+          path: |
+            candidate.apk
+            candidate-sha256.txt
+            host-uname.txt
+            docker-version.txt
+            binder-devices.txt
+            binder-host.txt
+            image-platform.txt
+            container-id.txt
+            redroid.log
+            redroid-inspect.json
+            boot-time.txt
+            device-abi.txt
+            device-sdk.txt
+            device-release.txt
+            device-getprop.txt
+            runtime/**
+          retention-days: 7
