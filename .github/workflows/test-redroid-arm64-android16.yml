@@ -26,7 +26,7 @@ jobs:
           set -euo pipefail
           test "$(uname -m)" = aarch64
           sudo apt-get update -qq
-          sudo apt-get install -y -qq android-tools-adb curl unzip >/dev/null
+          sudo apt-get install -y -qq android-tools-adb curl unzip kmod >/dev/null
           uname -a | tee host-uname.txt
           docker version | tee docker-version.txt
           curl -fL --retry 4 --retry-all-errors \
@@ -40,13 +40,14 @@ jobs:
       - name: Start Android 16 ARM64 container
         run: |
           set -euo pipefail
-          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>/dev/null || true
-          ls -l /dev/binder* /dev/*binder* 2>/dev/null | tee binder-devices.txt || true
-          grep -E 'binder|ashmem' /proc/filesystems /proc/modules 2>/dev/null | tee binder-host.txt || true
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 | tee modprobe-binder.txt || true
+          ls -la /dev/binder* /dev/*binder* 2>/dev/null | tee binder-devices.txt || true
+          { cat /proc/filesystems; cat /proc/modules; } | grep -E 'binder|ashmem' | tee binder-host.txt || true
           docker pull redroid/redroid:16.0.0_64only-latest
           docker image inspect redroid/redroid:16.0.0_64only-latest --format '{{.Architecture}} {{.Os}}' | tee image-platform.txt
           grep -qx 'arm64 linux' image-platform.txt
-          docker run -d --rm --privileged \
+          docker rm -f redroid16 >/dev/null 2>&1 || true
+          docker run -d --privileged \
             --name redroid16 \
             -p 5555:5555 \
             redroid/redroid:16.0.0_64only-latest \
@@ -54,6 +55,9 @@ jobs:
             androidboot.redroid_width=1080 \
             androidboot.redroid_height=2400 \
             androidboot.redroid_dpi=420 | tee container-id.txt
+          sleep 5
+          docker ps -a --filter name=redroid16 --no-trunc | tee redroid-ps.txt
+          docker inspect redroid16 > redroid-inspect.json || true
           docker logs redroid16 > redroid.log 2>&1 || true
       - name: Wait for Android 16 and verify ARM64
         run: |
@@ -67,7 +71,12 @@ jobs:
               BOOT=$(adb -s 127.0.0.1:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
               if [ "$BOOT" = 1 ]; then READY=1; echo "BOOT_SECONDS=$(( $(date +%s)-START ))" | tee boot-time.txt; break; fi
             fi
-            docker ps --format '{{.Names}}' | grep -qx redroid16 || { docker logs redroid16 || true; exit 70; }
+            if ! docker ps --format '{{.Names}}' | grep -qx redroid16; then
+              docker ps -a --filter name=redroid16 --no-trunc | tee redroid-ps.txt
+              docker inspect redroid16 > redroid-inspect.json || true
+              docker logs redroid16 | tee redroid.log || true
+              exit 70
+            fi
             sleep 2
           done
           test "$READY" = 1
@@ -102,6 +111,7 @@ jobs:
       - name: Capture final diagnostics
         if: always()
         run: |
+          docker ps -a --filter name=redroid16 --no-trunc > redroid-ps.txt 2>&1 || true
           docker logs redroid16 > redroid.log 2>&1 || true
           docker inspect redroid16 > redroid-inspect.json 2>/dev/null || true
           adb -s 127.0.0.1:5555 shell getprop > device-getprop.txt 2>/dev/null || true
@@ -115,10 +125,12 @@ jobs:
             candidate-sha256.txt
             host-uname.txt
             docker-version.txt
+            modprobe-binder.txt
             binder-devices.txt
             binder-host.txt
             image-platform.txt
             container-id.txt
+            redroid-ps.txt
             redroid.log
             redroid-inspect.json
             boot-time.txt
