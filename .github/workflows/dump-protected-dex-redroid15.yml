@@ -1,0 +1,174 @@
+name: Dump protected DEX on native ARM64 Redroid15
+
+on:
+  push:
+    branches: [xuper-vod-media-fallback]
+    paths: ['.github/workflows/dump-protected-dex-redroid15.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  dump-dex:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
+    env:
+      PACKAGE: com.msandroid.mobile
+      STABLE_ARTIFACT: '9623417943'
+      FRIDA_VERSION: '17.2.17'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare stable APK Frida and native ARM64 Android 15
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq android-tools-adb curl unzip xz-utils kmod gcc linux-libc-dev python3-pip >/dev/null
+          mkdir -p work runtime dumps
+          curl -fL --retry 4 --retry-all-errors -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${STABLE_ARTIFACT}/zip" -o work/stable.zip
+          unzip -q work/stable.zip -d work/stable
+          APK=$(find work/stable -type f -name '*.apk' | head -1)
+          test -s "$APK"
+          cp "$APK" work/stable.apk
+          sha256sum work/stable.apk | tee runtime/stable-sha256.txt
+          python3 -m pip install --break-system-packages --disable-pip-version-check "frida==${FRIDA_VERSION}" frida-tools >/dev/null
+          curl -fL --retry 4 --retry-all-errors \
+            "https://github.com/frida/frida/releases/download/${FRIDA_VERSION}/frida-server-${FRIDA_VERSION}-android-arm64.xz" \
+            -o work/frida-server.xz
+          xz -dc work/frida-server.xz > work/frida-server
+          chmod +x work/frida-server
+
+          KREL="$(uname -r)"
+          sudo apt-get install -y -qq "linux-modules-extra-${KREL}" >/dev/null 2>&1 || true
+          sudo depmod -a || true
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" || true
+          sudo mkdir -p /dev/binderfs
+          if ! mountpoint -q /dev/binderfs; then sudo mount -t binder binder /dev/binderfs; fi
+          cat >/tmp/mkbinder.c <<'EOF'
+          #include <errno.h>
+          #include <fcntl.h>
+          #include <stdio.h>
+          #include <sys/ioctl.h>
+          #include <unistd.h>
+          #include <linux/android/binderfs.h>
+          static int add(int fd,const char*n){struct binderfs_device d={0};snprintf(d.name,sizeof(d.name),"%s",n);if(ioctl(fd,BINDER_CTL_ADD,&d)==0||errno==EEXIST)return 0;return 1;}
+          int main(void){int fd=open("/dev/binderfs/binder-control",O_RDONLY|O_CLOEXEC);if(fd<0)return 2;int r=add(fd,"binder")|add(fd,"hwbinder")|add(fd,"vndbinder");close(fd);return r;}
+          EOF
+          gcc -O2 /tmp/mkbinder.c -o /tmp/mkbinder
+          sudo /tmp/mkbinder || true
+          for n in binder hwbinder vndbinder; do test -e "/dev/binderfs/$n"; sudo chmod 666 "/dev/binderfs/$n" || true; done
+          docker pull redroid/redroid:15.0.0_64only-latest >/dev/null
+          docker run -d --privileged --name redroid15 \
+            -p 5555:5555 -p 27042:27042 -p 27043:27043 \
+            -v /dev/binderfs:/dev/binderfs \
+            redroid/redroid:15.0.0_64only-latest androidboot.redroid_gpu_mode=guest >/dev/null
+          adb start-server
+          for i in $(seq 1 120); do adb connect 127.0.0.1:5555 >/dev/null 2>&1 || true; B=$(adb -s 127.0.0.1:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'); [ "$B" = 1 ] && break; [ "$i" = 120 ] && exit 72; sleep 2; done
+          adb -s 127.0.0.1:5555 shell getprop ro.product.cpu.abi | tee runtime/abi.txt
+          adb -s 127.0.0.1:5555 shell getprop ro.build.version.sdk | tee runtime/sdk.txt
+          grep -q '^arm64-v8a' runtime/abi.txt
+          grep -q '^35' runtime/sdk.txt
+          adb -s 127.0.0.1:5555 push work/frida-server /data/local/tmp/frida-server >/dev/null
+          adb -s 127.0.0.1:5555 shell chmod 755 /data/local/tmp/frida-server
+          adb -s 127.0.0.1:5555 shell 'pkill -f frida-server || true'
+          adb -s 127.0.0.1:5555 shell '/data/local/tmp/frida-server -l 0.0.0.0:27042 >/data/local/tmp/frida.log 2>&1 &' 
+          for i in $(seq 1 30); do frida-ps -H 127.0.0.1:27042 >/dev/null 2>&1 && break; [ "$i" = 30 ] && { adb -s 127.0.0.1:5555 shell cat /data/local/tmp/frida.log || true; exit 73; }; sleep 1; done
+      - name: Install launch and dump decrypted DEX mappings
+        shell: bash
+        run: |
+          set -euo pipefail
+          adb -s 127.0.0.1:5555 uninstall "$PACKAGE" >/dev/null 2>&1 || true
+          adb -s 127.0.0.1:5555 install --no-incremental -g work/stable.apk | tee runtime/install.txt
+          grep -q Success runtime/install.txt
+          adb -s 127.0.0.1:5555 logcat -c
+          adb -s 127.0.0.1:5555 shell monkey -p "$PACKAGE" -c android.intent.category.LAUNCHER --pct-syskeys 0 --pct-appswitch 0 --pct-anyevent 0 1 > runtime/launch.txt 2>&1 || true
+          for i in $(seq 1 30); do PID=$(adb -s 127.0.0.1:5555 shell pidof "$PACKAGE" 2>/dev/null | tr -d '\r[:space:]' || true); [ -n "$PID" ] && break; sleep 1; done
+          test -n "${PID:-}"
+          echo "$PID" | tee runtime/pid.txt
+          sleep 4
+          cat > work/dumpdex.js <<'EOF'
+          'use strict';
+          const outDir = '/data/data/com.msandroid.mobile/files';
+          const patterns = ['64 65 78 0a 30 33 35 00','64 65 78 0a 30 33 37 00','64 65 78 0a 30 33 38 00','64 65 78 0a 30 33 39 00'];
+          const seen = {};
+          function u32(p){ try { return p.readU32(); } catch(e){ return 0; } }
+          function plausible(base){
+            const fileSize=u32(base.add(0x20));
+            const headerSize=u32(base.add(0x24));
+            const strings=u32(base.add(0x38));
+            const classes=u32(base.add(0x60));
+            if(headerSize!==0x70) return null;
+            if(fileSize<4096 || fileSize>120*1024*1024) return null;
+            if(strings===0 || classes===0) return null;
+            return {fileSize,strings,classes};
+          }
+          let idx=0;
+          for (const r of Process.enumerateRanges('r--')) {
+            for (const pat of patterns) {
+              let hits=[];
+              try { hits=Memory.scanSync(r.base,r.size,pat); } catch(e) { continue; }
+              for (const h of hits) {
+                const k=h.address.toString(); if(seen[k]) continue; seen[k]=1;
+                const m=plausible(h.address); if(!m) continue;
+                if(m.classes<20 && m.fileSize<1024*1024) continue;
+                const fn=outDir+'/frida-dump-'+idx+'-'+m.classes+'c-'+m.fileSize+'.dex';
+                try {
+                  const f=new File(fn,'wb');
+                  const chunk=1024*1024; let pos=0;
+                  while(pos<m.fileSize){ const n=Math.min(chunk,m.fileSize-pos); f.write(h.address.add(pos).readByteArray(n)); pos+=n; }
+                  f.flush(); f.close();
+                  send({type:'dump',file:fn,base:k,size:m.fileSize,classes:m.classes,strings:m.strings}); idx++;
+                } catch(e) { send({type:'error',base:k,error:String(e)}); }
+              }
+            }
+          }
+          send({type:'done',count:idx});
+          setTimeout(function(){},5000);
+          EOF
+          timeout 45s frida -H 127.0.0.1:27042 -n "$PACKAGE" -q -l work/dumpdex.js > runtime/frida.txt 2>&1 || true
+          adb -s 127.0.0.1:5555 shell 'ls -l /data/data/com.msandroid.mobile/files/frida-dump-*.dex 2>/dev/null || true' | tee runtime/device-dumps.txt
+          for f in $(adb -s 127.0.0.1:5555 shell 'ls /data/data/com.msandroid.mobile/files/frida-dump-*.dex 2>/dev/null' | tr -d '\r'); do adb -s 127.0.0.1:5555 pull "$f" dumps/ >/dev/null; done
+          adb -s 127.0.0.1:5555 logcat -d -v threadtime > runtime/logcat.txt 2>&1 || true
+          adb -s 127.0.0.1:5555 logcat -b crash -d -v threadtime > runtime/crash.txt 2>&1 || true
+          find dumps -type f -name '*.dex' -size +4k -print | tee runtime/dump-list.txt
+          test -s runtime/dump-list.txt
+      - name: Validate dumps contain protected application code
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > runtime/dump-validation.txt
+          FOUND=0
+          for f in dumps/*.dex; do
+            [ -f "$f" ] || continue
+            echo "=== $f ===" | tee -a runtime/dump-validation.txt
+            sha256sum "$f" | tee -a runtime/dump-validation.txt
+            python3 - "$f" <<'PY' | tee -a runtime/dump-validation.txt
+          import sys,struct
+          b=open(sys.argv[1],'rb').read(112)
+          print('magic',repr(b[:8]))
+          print('file_size',struct.unpack_from('<I',b,0x20)[0])
+          print('strings',struct.unpack_from('<I',b,0x38)[0])
+          print('classes',struct.unpack_from('<I',b,0x60)[0])
+          PY
+            if strings -a "$f" | grep -Eq 'Lcom/mobile/brasiltv/activity/PlayAty;|Lmobile/com/requestframe/utils/bean/StartPlayVODBean;|/api/portalCore/.*/startPlayVOD'; then
+              echo 'APP_VOD_CODE=YES' | tee -a runtime/dump-validation.txt
+              FOUND=1
+            fi
+          done
+          echo "FOUND_APP_VOD_DEX=$FOUND" | tee -a runtime/dump-validation.txt
+          [ "$FOUND" = 1 ]
+      - name: Upload decrypted DEX and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: protected-dex-redroid15
+          path: |
+            dumps/**
+            runtime/**
+          retention-days: 7
