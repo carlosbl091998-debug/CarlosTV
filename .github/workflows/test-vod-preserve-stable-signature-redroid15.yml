@@ -1,0 +1,134 @@
+name: Test VOD fallback preserving stable signature on ARM64 Redroid15
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [xuper-vod-media-fallback]
+    paths:
+      - '.github/workflows/test-vod-preserve-stable-signature-redroid15.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  test-preserved-signature:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    env:
+      PACKAGE: com.msandroid.mobile
+      STABLE_ARTIFACT: '9623417943'
+      PATCHED_ARTIFACT: '9701400558'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare host and build preserved-signature candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq android-tools-adb curl unzip zip kmod gcc linux-libc-dev >/dev/null
+          mkdir -p work/stable work/patched runtime
+          curl -fL --retry 4 --retry-all-errors -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${STABLE_ARTIFACT}/zip" -o work/stable.zip
+          unzip -q work/stable.zip -d work/stable
+          STABLE=$(find work/stable -type f -name '*.apk' | head -1)
+          test -s "$STABLE"
+          curl -fL --retry 4 --retry-all-errors -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${PATCHED_ARTIFACT}/zip" -o work/patched.zip
+          unzip -q work/patched.zip -d work/patched
+          PATCHED=$(find work/patched -type f -name '*.apk' | head -1)
+          test -s "$PATCHED"
+          unzip -p "$PATCHED" classes2.dex > work/classes2.dex
+          test -s work/classes2.dex
+          cp "$STABLE" candidate.apk
+          cp work/classes2.dex classes2.dex
+          zip -q -u candidate.apk classes2.dex
+          rm classes2.dex
+          unzip -l candidate.apk | grep -E 'META-INF/PATCH\.(RSA|SF)|classes2.dex' | tee package-proof.txt
+          unzip -p candidate.apk META-INF/PATCH.RSA > work/PATCH.RSA
+          keytool -printcert -file work/PATCH.RSA | tee stable-cert.txt
+          grep -q 'XuperVODCompatibility' stable-cert.txt
+          sha256sum candidate.apk | tee candidate-sha256.txt
+
+      - name: Start Redroid15 native ARM64
+        shell: bash
+        run: |
+          set -euo pipefail
+          KREL="$(uname -r)"
+          sudo apt-get install -y -qq "linux-modules-extra-${KREL}" >/dev/null 2>&1 || true
+          sudo depmod -a || true
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" || true
+          sudo mkdir -p /dev/binderfs
+          if ! mountpoint -q /dev/binderfs; then sudo mount -t binder binder /dev/binderfs; fi
+          cat >/tmp/mkbinder.c <<'EOF'
+          #include <errno.h>
+          #include <fcntl.h>
+          #include <stdio.h>
+          #include <sys/ioctl.h>
+          #include <unistd.h>
+          #include <linux/android/binderfs.h>
+          static int add(int fd,const char*n){struct binderfs_device d={0};snprintf(d.name,sizeof(d.name),"%s",n);if(ioctl(fd,BINDER_CTL_ADD,&d)==0||errno==EEXIST)return 0;return 1;}
+          int main(void){int fd=open("/dev/binderfs/binder-control",O_RDONLY|O_CLOEXEC);if(fd<0)return 2;int r=add(fd,"binder")|add(fd,"hwbinder")|add(fd,"vndbinder");close(fd);return r;}
+          EOF
+          gcc -O2 /tmp/mkbinder.c -o /tmp/mkbinder
+          sudo /tmp/mkbinder || true
+          for n in binder hwbinder vndbinder; do test -e "/dev/binderfs/$n"; sudo chmod 666 "/dev/binderfs/$n" || true; done
+          docker pull redroid/redroid:15.0.0_64only-latest >/dev/null
+          docker rm -f redroid15 >/dev/null 2>&1 || true
+          docker run -d --privileged --name redroid15 -p 5555:5555 -v /dev/binderfs:/dev/binderfs \
+            redroid/redroid:15.0.0_64only-latest androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 androidboot.redroid_height=2400 androidboot.redroid_dpi=420 >/dev/null
+          adb start-server
+          for i in $(seq 1 120); do
+            adb connect 127.0.0.1:5555 >/dev/null 2>&1 || true
+            B=$(adb -s 127.0.0.1:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$B" = 1 ] && break
+            [ "$i" = 120 ] && exit 72
+            sleep 2
+          done
+          test "$(adb -s 127.0.0.1:5555 shell getprop ro.product.cpu.abi | tr -d '\r')" = arm64-v8a
+          test "$(adb -s 127.0.0.1:5555 shell getprop ro.build.version.sdk | tr -d '\r')" = 35
+
+      - name: Install launch and enforce 10 30 45 second liveness
+        shell: bash
+        run: |
+          set -u
+          mkdir -p runtime
+          adb -s 127.0.0.1:5555 uninstall "$PACKAGE" >/dev/null 2>&1 || true
+          adb -s 127.0.0.1:5555 install -g candidate.apk | tee runtime/install.txt
+          grep -q 'Success' runtime/install.txt || exit 80
+          adb -s 127.0.0.1:5555 logcat -c
+          adb -s 127.0.0.1:5555 shell monkey -p "$PACKAGE" -c android.intent.category.LAUNCHER --pct-syskeys 0 --pct-appswitch 0 --pct-anyevent 0 1 > runtime/launch.txt 2>&1 || true
+          sleep 3
+          PID=$(adb -s 127.0.0.1:5555 shell pidof "$PACKAGE" 2>/dev/null | tr -d '\r[:space:]' || true)
+          echo "$PID" | tee runtime/pid-initial.txt
+          PASS=1
+          [ -n "$PID" ] || PASS=0
+          START=$(date +%s)
+          for T in 10 30 45; do
+            while [ $(( $(date +%s)-START )) -lt "$T" ]; do sleep 1; done
+            P=$(adb -s 127.0.0.1:5555 shell pidof "$PACKAGE" 2>/dev/null | tr -d '\r[:space:]' || true)
+            echo "$T $P" | tee -a runtime/pid-samples.txt
+            [ -n "$P" ] && [ "$P" = "$PID" ] || PASS=0
+          done
+          adb -s 127.0.0.1:5555 logcat -d -v threadtime > runtime/logcat.txt 2>&1 || true
+          adb -s 127.0.0.1:5555 logcat -b crash -d -v threadtime > runtime/crash.txt 2>&1 || true
+          if grep -E "com\.msandroid\.mobile|sandroid\.mobile" runtime/logcat.txt runtime/crash.txt | grep -Eqi 'FATAL EXCEPTION|Fatal signal|SIGSEGV|UnsatisfiedLinkError|Process .* died|Force finishing activity'; then PASS=0; fi
+          echo "FINAL_PASS=$PASS" | tee runtime/result.txt
+          [ "$PASS" = 1 ]
+
+      - name: Upload candidate and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xuper-vod-preserved-signature-redroid15
+          path: |
+            candidate.apk
+            candidate-sha256.txt
+            package-proof.txt
+            stable-cert.txt
+            runtime/**
+          retention-days: 7
