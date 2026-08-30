@@ -33,6 +33,7 @@ jobs:
           unzip -q work/stable.zip -d work/stable
           STABLE=$(find work/stable -type f -name '*.apk' | head -1)
           test -s "$STABLE"
+          cp "$STABLE" out/stable.apk
           SDKROOT=/tmp/android-sdk
           mkdir -p "$SDKROOT"
           curl -fL --retry 4 https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o /tmp/cmd.zip
@@ -54,7 +55,7 @@ jobs:
           "$SDKROOT/build-tools/35.0.0/zipalign" -f -p 4 candidate-unsigned.apk aligned.apk
           "$SDKROOT/build-tools/35.0.0/apksigner" sign --ks work/probe.jks --ks-key-alias probe --ks-pass pass:android --key-pass pass:android --out out/candidate.apk aligned.apk
           "$SDKROOT/build-tools/35.0.0/apksigner" verify --verbose out/candidate.apk > out/signature.txt
-          sha256sum out/candidate.apk > out/candidate-sha256.txt
+          sha256sum out/stable.apk out/candidate.apk > out/candidate-sha256.txt
       - uses: actions/upload-artifact@v4
         with:
           name: benign-candidate
@@ -108,27 +109,38 @@ jobs:
           adb -s 127.0.0.1:5555 shell getprop ro.build.version.sdk | tee runtime/sdk.txt
           grep -q '^arm64-v8a' runtime/abi.txt
           grep -q '^35' runtime/sdk.txt
-      - name: Install launch and enforce 10 30 45 second liveness
+      - name: Compare stable control and candidate at 10 30 45 seconds
         shell: bash
         run: |
           set -u
-          APK=candidate/candidate.apk
-          test -s "$APK" || exit 79
-          adb -s 127.0.0.1:5555 uninstall "$PACKAGE" >/dev/null 2>&1 || true
-          adb -s 127.0.0.1:5555 install -g "$APK" | tee runtime/install.txt
-          grep -q Success runtime/install.txt || exit 80
-          adb -s 127.0.0.1:5555 logcat -c
-          adb -s 127.0.0.1:5555 shell monkey -p "$PACKAGE" -c android.intent.category.LAUNCHER --pct-syskeys 0 --pct-appswitch 0 --pct-anyevent 0 1 > runtime/launch.txt 2>&1 || true
-          sleep 3
-          PID=$(adb -s 127.0.0.1:5555 shell pidof "$PACKAGE" 2>/dev/null | tr -d '\r[:space:]' || true)
-          echo "$PID" > runtime/pid-initial.txt
-          PASS=1; [ -n "$PID" ] || PASS=0; START=$(date +%s)
-          for T in 10 30 45; do while [ $(( $(date +%s)-START )) -lt "$T" ]; do sleep 1; done; P=$(adb -s 127.0.0.1:5555 shell pidof "$PACKAGE" 2>/dev/null | tr -d '\r[:space:]' || true); echo "$T $P" | tee -a runtime/pid-samples.txt; [ -n "$P" ] && [ "$P" = "$PID" ] || PASS=0; done
-          adb -s 127.0.0.1:5555 logcat -d -v threadtime > runtime/logcat.txt 2>&1 || true
-          adb -s 127.0.0.1:5555 logcat -b crash -d -v threadtime > runtime/crash.txt 2>&1 || true
-          if grep -E "com\.msandroid\.mobile|sandroid\.mobile" runtime/logcat.txt runtime/crash.txt | grep -Eqi 'FATAL EXCEPTION|Fatal signal|SIGSEGV|UnsatisfiedLinkError|Process .* died|Force finishing activity'; then PASS=0; fi
-          echo "FINAL_PASS=$PASS" | tee runtime/result.txt
-          [ "$PASS" = 1 ]
+          test_one() {
+            NAME="$1"; APK="$2"; DIR="runtime/$NAME"; mkdir -p "$DIR"
+            adb -s 127.0.0.1:5555 uninstall "$PACKAGE" >/dev/null 2>&1 || true
+            adb -s 127.0.0.1:5555 install --no-incremental -g "$APK" | tee "$DIR/install.txt"
+            grep -q Success "$DIR/install.txt" || { echo FINAL_PASS=0 > "$DIR/result.txt"; return 1; }
+            adb -s 127.0.0.1:5555 logcat -c
+            adb -s 127.0.0.1:5555 shell monkey -p "$PACKAGE" -c android.intent.category.LAUNCHER --pct-syskeys 0 --pct-appswitch 0 --pct-anyevent 0 1 > "$DIR/launch.txt" 2>&1 || true
+            sleep 3
+            PID=$(adb -s 127.0.0.1:5555 shell pidof "$PACKAGE" 2>/dev/null | tr -d '\r[:space:]' || true)
+            echo "$PID" > "$DIR/pid-initial.txt"
+            PASS=1; [ -n "$PID" ] || PASS=0; START=$(date +%s)
+            for T in 10 30 45; do
+              while [ $(( $(date +%s)-START )) -lt "$T" ]; do sleep 1; done
+              P=$(adb -s 127.0.0.1:5555 shell pidof "$PACKAGE" 2>/dev/null | tr -d '\r[:space:]' || true)
+              echo "$T $P" | tee -a "$DIR/pid-samples.txt"
+              [ -n "$P" ] && [ "$P" = "$PID" ] || PASS=0
+            done
+            adb -s 127.0.0.1:5555 logcat -d -v threadtime > "$DIR/logcat.txt" 2>&1 || true
+            adb -s 127.0.0.1:5555 logcat -b crash -d -v threadtime > "$DIR/crash.txt" 2>&1 || true
+            if grep -E "com\.msandroid\.mobile|sandroid\.mobile" "$DIR/logcat.txt" "$DIR/crash.txt" | grep -Eqi 'FATAL EXCEPTION|Fatal signal|SIGSEGV|UnsatisfiedLinkError|Process .* died|Force finishing activity'; then PASS=0; fi
+            echo "FINAL_PASS=$PASS" | tee "$DIR/result.txt"
+            [ "$PASS" = 1 ]
+          }
+          STABLE_RC=0; CANDIDATE_RC=0
+          test_one stable candidate/stable.apk || STABLE_RC=$?
+          test_one candidate candidate/candidate.apk || CANDIDATE_RC=$?
+          echo "stable_rc=$STABLE_RC candidate_rc=$CANDIDATE_RC" | tee runtime/summary.txt
+          [ "$STABLE_RC" = 0 ] && [ "$CANDIDATE_RC" = 0 ]
       - name: Upload ARM64 diagnostics and APK
         if: always()
         uses: actions/upload-artifact@v4
@@ -136,6 +148,7 @@ jobs:
           name: benign-classes2-redroid15
           path: |
             candidate/candidate.apk
+            candidate/stable.apk
             candidate/candidate-sha256.txt
             candidate/signature.txt
             runtime/**
