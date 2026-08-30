@@ -11,24 +11,23 @@ permissions:
   actions: read
 
 jobs:
-  benign-classes2:
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 20
+  build-candidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     env:
-      PACKAGE: com.msandroid.mobile
       STABLE_ARTIFACT: '9623417943'
     steps:
       - uses: actions/checkout@v4
-      - name: Build benign multidex candidate
+      - name: Build and sign benign multidex candidate on x86_64
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          test "$(uname -m)" = aarch64
+          test "$(uname -m)" = x86_64
           sudo apt-get update -qq
-          sudo apt-get install -y -qq android-tools-adb curl unzip zip kmod gcc linux-libc-dev openjdk-17-jdk-headless >/dev/null
-          mkdir -p work/stable runtime src build
+          sudo apt-get install -y -qq curl unzip zip openjdk-17-jdk-headless >/dev/null
+          mkdir -p work/stable src build out
           curl -fL --retry 4 --retry-all-errors -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${STABLE_ARTIFACT}/zip" -o work/stable.zip
           unzip -q work/stable.zip -d work/stable
@@ -53,13 +52,35 @@ jobs:
           zip -q -u candidate-unsigned.apk classes2.dex
           keytool -genkeypair -noprompt -keystore work/probe.jks -storepass android -keypass android -alias probe -dname 'CN=BenignDexProbe,O=LocalTest,C=MX' -keyalg RSA -keysize 2048 -validity 10000 >/dev/null
           "$SDKROOT/build-tools/35.0.0/zipalign" -f -p 4 candidate-unsigned.apk aligned.apk
-          "$SDKROOT/build-tools/35.0.0/apksigner" sign --ks work/probe.jks --ks-key-alias probe --ks-pass pass:android --key-pass pass:android --out candidate.apk aligned.apk
-          "$SDKROOT/build-tools/35.0.0/apksigner" verify --verbose candidate.apk > signature.txt
-          sha256sum candidate.apk > candidate-sha256.txt
+          "$SDKROOT/build-tools/35.0.0/apksigner" sign --ks work/probe.jks --ks-key-alias probe --ks-pass pass:android --key-pass pass:android --out out/candidate.apk aligned.apk
+          "$SDKROOT/build-tools/35.0.0/apksigner" verify --verbose out/candidate.apk > out/signature.txt
+          sha256sum out/candidate.apk > out/candidate-sha256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benign-candidate
+          path: out/**
+          retention-days: 7
+
+  arm64-liveness:
+    needs: build-candidate
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    env:
+      PACKAGE: com.msandroid.mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: benign-candidate
+          path: candidate
       - name: Start Redroid15 native ARM64
         shell: bash
         run: |
           set -euo pipefail
+          test "$(uname -m)" = aarch64
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq android-tools-adb kmod gcc linux-libc-dev >/dev/null
+          mkdir -p runtime
           KREL="$(uname -r)"
           sudo apt-get install -y -qq "linux-modules-extra-${KREL}" >/dev/null 2>&1 || true
           sudo depmod -a || true
@@ -83,14 +104,18 @@ jobs:
           docker run -d --privileged --name redroid15 -p 5555:5555 -v /dev/binderfs:/dev/binderfs redroid/redroid:15.0.0_64only-latest androidboot.redroid_gpu_mode=guest >/dev/null
           adb start-server
           for i in $(seq 1 120); do adb connect 127.0.0.1:5555 >/dev/null 2>&1 || true; B=$(adb -s 127.0.0.1:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'); [ "$B" = 1 ] && break; [ "$i" = 120 ] && exit 72; sleep 2; done
-          test "$(adb -s 127.0.0.1:5555 shell getprop ro.product.cpu.abi | tr -d '\r')" = arm64-v8a
-          test "$(adb -s 127.0.0.1:5555 shell getprop ro.build.version.sdk | tr -d '\r')" = 35
+          adb -s 127.0.0.1:5555 shell getprop ro.product.cpu.abi | tee runtime/abi.txt
+          adb -s 127.0.0.1:5555 shell getprop ro.build.version.sdk | tee runtime/sdk.txt
+          grep -q '^arm64-v8a' runtime/abi.txt
+          grep -q '^35' runtime/sdk.txt
       - name: Install launch and enforce 10 30 45 second liveness
         shell: bash
         run: |
           set -u
+          APK=candidate/candidate.apk
+          test -s "$APK" || exit 79
           adb -s 127.0.0.1:5555 uninstall "$PACKAGE" >/dev/null 2>&1 || true
-          adb -s 127.0.0.1:5555 install -g candidate.apk | tee runtime/install.txt
+          adb -s 127.0.0.1:5555 install -g "$APK" | tee runtime/install.txt
           grep -q Success runtime/install.txt || exit 80
           adb -s 127.0.0.1:5555 logcat -c
           adb -s 127.0.0.1:5555 shell monkey -p "$PACKAGE" -c android.intent.category.LAUNCHER --pct-syskeys 0 --pct-appswitch 0 --pct-anyevent 0 1 > runtime/launch.txt 2>&1 || true
@@ -104,14 +129,14 @@ jobs:
           if grep -E "com\.msandroid\.mobile|sandroid\.mobile" runtime/logcat.txt runtime/crash.txt | grep -Eqi 'FATAL EXCEPTION|Fatal signal|SIGSEGV|UnsatisfiedLinkError|Process .* died|Force finishing activity'; then PASS=0; fi
           echo "FINAL_PASS=$PASS" | tee runtime/result.txt
           [ "$PASS" = 1 ]
-      - name: Upload diagnostics
+      - name: Upload ARM64 diagnostics and APK
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: benign-classes2-redroid15
           path: |
-            candidate.apk
-            candidate-sha256.txt
-            signature.txt
+            candidate/candidate.apk
+            candidate/candidate-sha256.txt
+            candidate/signature.txt
             runtime/**
           retention-days: 7
