@@ -81,28 +81,32 @@ jobs:
           test "$(adb -s 127.0.0.1:5555 shell getprop ro.build.version.sdk | tr -d '\r')" = 35
       - name: Install launch and sample liveness
         run: |
-          set -euo pipefail
+          set -u
           mkdir -p runtime
           adb -s 127.0.0.1:5555 install -r -g app.apk | tee runtime/install.txt
           adb -s 127.0.0.1:5555 logcat -c
-          adb -s 127.0.0.1:5555 shell monkey -p "$PACKAGE" -c android.intent.category.LAUNCHER --pct-syskeys 0 --pct-appswitch 0 --pct-anyevent 0 1 > runtime/launch.txt 2>&1
+          adb -s 127.0.0.1:5555 shell monkey -p "$PACKAGE" -c android.intent.category.LAUNCHER --pct-syskeys 0 --pct-appswitch 0 --pct-anyevent 0 1 > runtime/launch.txt 2>&1 || true
           sleep 3
-          PID=$(adb -s 127.0.0.1:5555 shell pidof "$PACKAGE" | tr -d '\r[:space:]')
+          PID=$(adb -s 127.0.0.1:5555 shell pidof "$PACKAGE" 2>/dev/null | tr -d '\r[:space:]' || true)
           echo "$PID" | tee runtime/pid-initial.txt
-          test -n "$PID"
           START=$(date +%s)
           PASS=1
+          [ -n "$PID" ] || PASS=0
           for T in 10 30 45; do
             while [ $(( $(date +%s)-START )) -lt "$T" ]; do sleep 1; done
-            P=$(adb -s 127.0.0.1:5555 shell pidof "$PACKAGE" | tr -d '\r[:space:]')
+            P=$(adb -s 127.0.0.1:5555 shell pidof "$PACKAGE" 2>/dev/null | tr -d '\r[:space:]' || true)
             echo "$T $P" | tee -a runtime/pid-samples.txt
-            [ "$P" = "$PID" ] || PASS=0
+            [ -n "$P" ] && [ "$P" = "$PID" ] || PASS=0
           done
-          adb -s 127.0.0.1:5555 logcat -d -v threadtime > runtime/logcat.txt
-          adb -s 127.0.0.1:5555 logcat -b crash -d -v threadtime > runtime/crash.txt || true
+          adb -s 127.0.0.1:5555 shell dumpsys activity processes > runtime/activity-processes.txt 2>&1 || true
+          adb -s 127.0.0.1:5555 shell dumpsys package "$PACKAGE" > runtime/package.txt 2>&1 || true
+          adb -s 127.0.0.1:5555 logcat -d -v threadtime > runtime/logcat.txt 2>&1 || true
+          adb -s 127.0.0.1:5555 logcat -b crash -d -v threadtime > runtime/crash.txt 2>&1 || true
+          docker logs redroid15 > runtime/redroid-container.txt 2>&1 || true
           echo "PASS=$PASS" | tee runtime/result.txt
+          if grep -Eqi "FATAL EXCEPTION|Fatal signal 11|SIGSEGV|UnsatisfiedLinkError|Process ${PACKAGE}.*died|Force finishing activity" runtime/logcat.txt runtime/crash.txt; then PASS=0; fi
+          echo "FINAL_PASS=$PASS" | tee -a runtime/result.txt
           [ "$PASS" = 1 ]
-          ! grep -Eqi "FATAL EXCEPTION|Fatal signal 11|SIGSEGV|UnsatisfiedLinkError" runtime/logcat.txt runtime/crash.txt
       - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v4
