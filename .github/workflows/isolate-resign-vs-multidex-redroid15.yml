@@ -1,0 +1,162 @@
+name: Isolate resign vs multidex on native ARM64 Redroid15
+
+on:
+  push:
+    branches: [xuper-vod-media-fallback]
+    paths: ['.github/workflows/isolate-resign-vs-multidex-redroid15.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      STABLE_ARTIFACT: '9623417943'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build original resigned and multidex variants
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq curl unzip zip openjdk-17-jdk-headless >/dev/null
+          mkdir -p work/stable src build out
+          curl -fL --retry 4 --retry-all-errors -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${STABLE_ARTIFACT}/zip" -o work/stable.zip
+          unzip -q work/stable.zip -d work/stable
+          STABLE=$(find work/stable -type f -name '*.apk' | head -1)
+          test -s "$STABLE"
+          cp "$STABLE" out/original.apk
+          SDKROOT=/tmp/android-sdk
+          mkdir -p "$SDKROOT"
+          curl -fL --retry 4 https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o /tmp/cmd.zip
+          unzip -q /tmp/cmd.zip -d /tmp/cmd
+          mkdir -p "$SDKROOT/cmdline-tools/latest" && mv /tmp/cmd/cmdline-tools/* "$SDKROOT/cmdline-tools/latest/"
+          yes | "$SDKROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDKROOT" --licenses >/dev/null || true
+          "$SDKROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDKROOT" 'build-tools;35.0.0' >/dev/null
+          keytool -genkeypair -noprompt -keystore work/probe.jks -storepass android -keypass android -alias probe -dname 'CN=Probe,O=LocalTest,C=MX' -keyalg RSA -keysize 2048 -validity 10000 >/dev/null
+
+          # Variant A: byte-identical APK payload, only a new APK signature block appended by apksigner.
+          cp "$STABLE" work/resigned-input.apk
+          "$SDKROOT/build-tools/35.0.0/apksigner" sign --ks work/probe.jks --ks-key-alias probe --ks-pass pass:android --key-pass pass:android --out out/resigned-direct.apk work/resigned-input.apk
+
+          # Variant B: remove legacy META-INF signatures, zipalign, then sign; no application payload added.
+          cp "$STABLE" work/repacked.apk
+          zip -q -d work/repacked.apk 'META-INF/*.RSA' 'META-INF/*.DSA' 'META-INF/*.EC' 'META-INF/*.SF' 'META-INF/MANIFEST.MF' >/dev/null 2>&1 || true
+          "$SDKROOT/build-tools/35.0.0/zipalign" -f -p 4 work/repacked.apk work/repacked-aligned.apk
+          "$SDKROOT/build-tools/35.0.0/apksigner" sign --ks work/probe.jks --ks-key-alias probe --ks-pass pass:android --key-pass pass:android --out out/repacked-resigned.apk work/repacked-aligned.apk
+
+          # Variant C: same as B plus a benign classes2.dex.
+          cat > src/Benign.java <<'EOF'
+          package com.carlostv.probe;
+          public final class Benign { public static int value(){ return 1; } }
+          EOF
+          javac -source 8 -target 8 -d build src/Benign.java
+          "$SDKROOT/build-tools/35.0.0/d8" --output build build/com/carlostv/probe/Benign.class
+          mv build/classes.dex work/classes2.dex
+          cp work/repacked-aligned.apk work/multidex.apk
+          zip -q -u work/multidex.apk work/classes2.dex
+          # zip stores path by default; fix to classes2.dex root
+          zip -q -d work/multidex.apk 'work/classes2.dex' >/dev/null 2>&1 || true
+          (cd work && zip -q -u multidex.apk classes2.dex)
+          "$SDKROOT/build-tools/35.0.0/zipalign" -f -p 4 work/multidex.apk work/multidex-aligned.apk
+          "$SDKROOT/build-tools/35.0.0/apksigner" sign --ks work/probe.jks --ks-key-alias probe --ks-pass pass:android --key-pass pass:android --out out/multidex.apk work/multidex-aligned.apk
+
+          for f in out/*.apk; do "$SDKROOT/build-tools/35.0.0/apksigner" verify --verbose "$f" > "${f%.apk}.verify.txt" 2>&1 || true; done
+          sha256sum out/*.apk > out/sha256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: resign-isolation-candidates
+          path: out/**
+          retention-days: 7
+
+  arm64:
+    needs: build
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
+    env:
+      PACKAGE: com.msandroid.mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: resign-isolation-candidates
+          path: candidates
+      - name: Start native ARM64 Android 15
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq android-tools-adb kmod gcc linux-libc-dev >/dev/null
+          mkdir -p runtime
+          KREL="$(uname -r)"
+          sudo apt-get install -y -qq "linux-modules-extra-${KREL}" >/dev/null 2>&1 || true
+          sudo depmod -a || true
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" || true
+          sudo mkdir -p /dev/binderfs
+          if ! mountpoint -q /dev/binderfs; then sudo mount -t binder binder /dev/binderfs; fi
+          cat >/tmp/mkbinder.c <<'EOF'
+          #include <errno.h>
+          #include <fcntl.h>
+          #include <stdio.h>
+          #include <sys/ioctl.h>
+          #include <unistd.h>
+          #include <linux/android/binderfs.h>
+          static int add(int fd,const char*n){struct binderfs_device d={0};snprintf(d.name,sizeof(d.name),"%s",n);if(ioctl(fd,BINDER_CTL_ADD,&d)==0||errno==EEXIST)return 0;return 1;}
+          int main(void){int fd=open("/dev/binderfs/binder-control",O_RDONLY|O_CLOEXEC);if(fd<0)return 2;int r=add(fd,"binder")|add(fd,"hwbinder")|add(fd,"vndbinder");close(fd);return r;}
+          EOF
+          gcc -O2 /tmp/mkbinder.c -o /tmp/mkbinder
+          sudo /tmp/mkbinder || true
+          for n in binder hwbinder vndbinder; do test -e "/dev/binderfs/$n"; sudo chmod 666 "/dev/binderfs/$n" || true; done
+          docker pull redroid/redroid:15.0.0_64only-latest >/dev/null
+          docker run -d --privileged --name redroid15 -p 5555:5555 -v /dev/binderfs:/dev/binderfs redroid/redroid:15.0.0_64only-latest androidboot.redroid_gpu_mode=guest >/dev/null
+          adb start-server
+          for i in $(seq 1 120); do adb connect 127.0.0.1:5555 >/dev/null 2>&1 || true; B=$(adb -s 127.0.0.1:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'); [ "$B" = 1 ] && break; [ "$i" = 120 ] && exit 72; sleep 2; done
+          adb -s 127.0.0.1:5555 shell getprop ro.product.cpu.abi | tee runtime/abi.txt
+          adb -s 127.0.0.1:5555 shell getprop ro.build.version.sdk | tee runtime/sdk.txt
+          grep -q '^arm64-v8a' runtime/abi.txt
+          grep -q '^35' runtime/sdk.txt
+      - name: Test all variants 10 30 45
+        shell: bash
+        run: |
+          set -u
+          test_one() {
+            NAME="$1"; APK="$2"; DIR="runtime/$NAME"; mkdir -p "$DIR"
+            adb -s 127.0.0.1:5555 uninstall "$PACKAGE" >/dev/null 2>&1 || true
+            adb -s 127.0.0.1:5555 install --no-incremental -g "$APK" | tee "$DIR/install.txt"
+            grep -q Success "$DIR/install.txt" || { echo FINAL_PASS=0 > "$DIR/result.txt"; return 1; }
+            adb -s 127.0.0.1:5555 logcat -c
+            adb -s 127.0.0.1:5555 shell monkey -p "$PACKAGE" -c android.intent.category.LAUNCHER --pct-syskeys 0 --pct-appswitch 0 --pct-anyevent 0 1 > "$DIR/launch.txt" 2>&1 || true
+            sleep 3
+            PID=$(adb -s 127.0.0.1:5555 shell pidof "$PACKAGE" 2>/dev/null | tr -d '\r[:space:]' || true)
+            PASS=1; [ -n "$PID" ] || PASS=0; START=$(date +%s)
+            echo "$PID" > "$DIR/pid-initial.txt"
+            for T in 10 30 45; do while [ $(( $(date +%s)-START )) -lt "$T" ]; do sleep 1; done; P=$(adb -s 127.0.0.1:5555 shell pidof "$PACKAGE" 2>/dev/null | tr -d '\r[:space:]' || true); echo "$T $P" | tee -a "$DIR/pid-samples.txt"; [ -n "$P" ] && [ "$P" = "$PID" ] || PASS=0; done
+            adb -s 127.0.0.1:5555 logcat -d -v threadtime > "$DIR/logcat.txt" 2>&1 || true
+            adb -s 127.0.0.1:5555 logcat -b crash -d -v threadtime > "$DIR/crash.txt" 2>&1 || true
+            if grep -E "com\.msandroid\.mobile|sandroid\.mobile" "$DIR/logcat.txt" "$DIR/crash.txt" | grep -Eqi 'FATAL EXCEPTION|Fatal signal|SIGSEGV|UnsatisfiedLinkError|Process .* died|Force finishing activity'; then PASS=0; fi
+            echo "FINAL_PASS=$PASS" | tee "$DIR/result.txt"
+            [ "$PASS" = 1 ]
+          }
+          : > runtime/summary.txt
+          ALL=0
+          for item in "original:candidates/original.apk" "resigned-direct:candidates/resigned-direct.apk" "repacked-resigned:candidates/repacked-resigned.apk" "multidex:candidates/multidex.apk"; do
+            N=${item%%:*}; A=${item#*:}; RC=0; test_one "$N" "$A" || RC=$?; echo "$N=$RC" | tee -a runtime/summary.txt
+          done
+          # Do not fail early; diagnostics are the point of this isolation run.
+      - name: Upload isolation diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resign-vs-multidex-redroid15
+          path: |
+            candidates/**
+            runtime/**
+          retention-days: 7
