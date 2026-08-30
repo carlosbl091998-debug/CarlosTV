@@ -113,7 +113,7 @@ jobs:
           adb -s 127.0.0.1:5555 install -r -g candidate.apk | tee runtime/install.txt
           grep -q Success runtime/install.txt
           adb -s 127.0.0.1:5555 logcat -c
-          adb -s 127.0.0.1:5555 shell monkey -p "$PACKAGE" -c android.intent.category.LAUNCHER 1 > runtime/launch.txt 2>&1
+          adb -s 127.0.0.1:5555 shell monkey -p "$PACKAGE" -c android.intent.category.LAUNCHER --pct-syskeys 0 --pct-appswitch 0 --pct-anyevent 0 1 > runtime/launch.txt 2>&1
           sleep 3
           PID=$(adb -s 127.0.0.1:5555 shell pidof "$PACKAGE" | tr -d '\r[:space:]')
           test -n "$PID"
