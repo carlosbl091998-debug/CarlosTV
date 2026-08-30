@@ -76,7 +76,7 @@ jobs:
           grep -q '^35' runtime/sdk.txt
           adb -s 127.0.0.1:5555 push work/frida-server /data/local/tmp/frida-server >/dev/null
           adb -s 127.0.0.1:5555 shell chmod 755 /data/local/tmp/frida-server
-          adb -s 127.0.0.1:5555 shell 'pkill -f frida-server || true'
+          adb -s 127.0.0.1:5555 shell 'killall frida-server >/dev/null 2>&1 || true'
           adb -s 127.0.0.1:5555 shell '/data/local/tmp/frida-server -l 0.0.0.0:27042 >/data/local/tmp/frida.log 2>&1 &' 
           for i in $(seq 1 30); do frida-ps -H 127.0.0.1:27042 >/dev/null 2>&1 && break; [ "$i" = 30 ] && { adb -s 127.0.0.1:5555 shell cat /data/local/tmp/frida.log || true; exit 73; }; sleep 1; done
       - name: Install launch and dump decrypted DEX mappings
