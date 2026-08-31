@@ -77,7 +77,8 @@ curl -fL --retry 3 --retry-all-errors \
   -o "$SMALI_JAR"
 curl -fL --retry 3 --retry-all-errors \
   'https://github.com/baksmali/smali/releases/download/3.0.9/baksmali-3.0.9-fat.jar' \
-  -o "$BAKSMALI_JAR"\n
+  -o "$BAKSMALI_JAR"
+
 # Preserve the complete runtime DEX. The previous candidate rebuilt classes2.dex
 # from only g2$u.smali, which caused a native startup crash. Disassemble every
 # class from the recovered runtime DEX, replace only g2$u, then reassemble all.
