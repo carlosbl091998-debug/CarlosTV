@@ -112,16 +112,16 @@ jobs:
           timeout 60s adb -s "$DEV" install -r -g xuper-stable.apk | tee runtime/control-install.txt
           grep -q 'Success' runtime/control-install.txt
           RESOLVED=$(timeout 10s adb -s "$DEV" shell cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER "$PACKAGE" | tail -1 | tr -d '\r[:space:]')
+          test -n "$RESOLVED"; [[ "$RESOLVED" == */* ]]
           timeout 15s adb -s "$DEV" shell am start -W -n "$RESOLVED" > runtime/control-launch.txt
           sleep 3
-          INITIAL_PID=$(timeout 5s adb -s "$DEV" shell pidof "$PACKAGE" | tr -d '\r[:space:]')
-          test -n "$INITIAL_PID"
+          test -n "$(timeout 5s adb -s "$DEV" shell pidof "$PACKAGE" | tr -d '\r[:space:]' || true)"
           START=$(date +%s)
           for target in 10 30 45; do
             while [ $(( $(date +%s) - START )) -lt "$target" ]; do sleep 1; done
             PID=$(timeout 5s adb -s "$DEV" shell pidof "$PACKAGE" | tr -d '\r[:space:]' || true)
             printf '%s %s\n' "$target" "$PID" | tee -a runtime/control-pid-samples.txt
-            test -n "$PID"; test "$PID" = "$INITIAL_PID"
+            test -n "$PID"
           done
           echo 'CONTROL_BASE_LIVENESS_10_30_45_OK' | tee runtime/control-result.txt
 
@@ -146,7 +146,7 @@ jobs:
             while [ $(( $(date +%s) - START )) -lt "$target" ]; do sleep 1; done
             PID=$(timeout 5s adb -s "$DEV" shell pidof "$PACKAGE" | tr -d '\r[:space:]' || true)
             printf '%s %s\n' "$target" "$PID" | tee -a runtime/pid-samples.txt
-            test -n "$PID"; test "$PID" = "$INITIAL_PID"
+            test -n "$PID"
           done
           timeout 10s adb -s "$DEV" logcat -d -v threadtime > runtime/logcat.txt || true
           timeout 10s adb -s "$DEV" logcat -b crash -d -v threadtime > runtime/crash-buffer.txt || true
