@@ -5,7 +5,7 @@ OUT='diagnostics-vod-media-fallback'
 WORK='/tmp/xuper-vod-direct'
 BASE='xuper-stable.apk'
 rm -rf "$OUT" "$WORK" "$BASE"
-mkdir -p "$OUT" "$WORK/base" "$WORK/runtime" "$WORK/smali-full" "$WORK/stub/com/secneo/apkwrapper" "$WORK/primary-smali" "$WORK/dummy23"
+mkdir -p "$OUT" "$WORK/base" "$WORK/runtime" "$WORK/smali-full" "$WORK/stub/com/secneo/apkwrapper" "$WORK/stub/com/google/firebase/provider" "$WORK/primary-smali" "$WORK/dummy23"
 checksum() { sha256sum "$1"; }
 : "${GH_TOKEN:?GH_TOKEN required}"
 
@@ -115,12 +115,53 @@ cat > "$WORK/stub/com/secneo/apkwrapper/CP.smali" <<'EOF'
     return v0
 .end method
 EOF
+cat > "$WORK/stub/com/google/firebase/provider/FirebaseInitProvider.smali" <<'EOF'
+.class public Lcom/google/firebase/provider/FirebaseInitProvider;
+.super Landroid/content/ContentProvider;
+.source "FirebaseInitProvider.java"
+.method public constructor <init>()V
+    .locals 0
+    invoke-direct {p0}, Landroid/content/ContentProvider;-><init>()V
+    return-void
+.end method
+.method public onCreate()Z
+    .locals 1
+    const/4 v0, 0x1
+    return v0
+.end method
+.method public getType(Landroid/net/Uri;)Ljava/lang/String;
+    .locals 1
+    const/4 v0, 0x0
+    return-object v0
+.end method
+.method public insert(Landroid/net/Uri;Landroid/content/ContentValues;)Landroid/net/Uri;
+    .locals 1
+    const/4 v0, 0x0
+    return-object v0
+.end method
+.method public query(Landroid/net/Uri;[Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;)Landroid/database/Cursor;
+    .locals 1
+    const/4 v0, 0x0
+    return-object v0
+.end method
+.method public delete(Landroid/net/Uri;Ljava/lang/String;[Ljava/lang/String;)I
+    .locals 1
+    const/4 v0, 0x0
+    return v0
+.end method
+.method public update(Landroid/net/Uri;Landroid/content/ContentValues;Ljava/lang/String;[Ljava/lang/String;)I
+    .locals 1
+    const/4 v0, 0x0
+    return v0
+.end method
+EOF
 
-# Android resolves Application/AppComponentFactory/provider before startup; put
-# manifest compatibility classes in the primary DEX, not classes23.dex.
+# Android resolves Application/AppComponentFactory/providers before startup; put
+# manifest compatibility classes in the primary DEX, not a secondary DEX.
 java -jar "$BAKSMALI_JAR" disassemble "$WORK/classes.dex" -o "$WORK/primary-smali" > "$OUT/primary-disassemble.txt" 2>&1
-mkdir -p "$WORK/primary-smali/com/secneo/apkwrapper"
+mkdir -p "$WORK/primary-smali/com/secneo/apkwrapper" "$WORK/primary-smali/com/google/firebase/provider"
 cp "$WORK/stub/com/secneo/apkwrapper/"*.smali "$WORK/primary-smali/com/secneo/apkwrapper/"
+cp "$WORK/stub/com/google/firebase/provider/"*.smali "$WORK/primary-smali/com/google/firebase/provider/"
 java -jar "$SMALI_JAR" assemble "$WORK/primary-smali" -o "$WORK/classes.dex.new" > "$OUT/primary-assemble.txt" 2>&1
 mv "$WORK/classes.dex.new" "$WORK/classes.dex"
 
@@ -154,4 +195,4 @@ CANDIDATE="$OUT/Xuper-6.2.4-VOD-StaticFallback-NoFrida.apk"
 "$APKSIGNER" verify --verbose --print-certs "$CANDIDATE" > "$OUT/signing.txt"
 checksum "$CANDIDATE" | tee "$OUT/candidate-sha256.txt"
 unzip -l "$CANDIDATE" > "$OUT/package-files.txt"
-echo 'FULL_68_DEX_PRIMARY_STUBS_VOD_FALLBACK_BUILD_OK' | tee "$OUT/build-result.txt"
+echo 'FULL_68_DEX_PRIMARY_STUBS_FIREBASE_VOD_FALLBACK_BUILD_OK' | tee "$OUT/build-result.txt"
