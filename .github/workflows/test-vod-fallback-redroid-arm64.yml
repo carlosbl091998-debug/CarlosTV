@@ -55,7 +55,9 @@ jobs:
           bash tools/build_vod_media_fallback.sh
           CANDIDATE='diagnostics-vod-media-fallback/Xuper-6.2.4-VOD-StaticFallback-NoFrida.apk'
           test -s "$CANDIDATE"
+          test -s xuper-stable.apk
           cp "$CANDIDATE" candidate.apk
+          sha256sum xuper-stable.apk | tee base-sha256.txt
           sha256sum candidate.apk | tee candidate-sha256.txt
           unzip -l candidate.apk > package-files.txt
           if grep -Eqi 'libgadget|VodFixProvider' package-files.txt; then
@@ -122,7 +124,51 @@ jobs:
           grep -q '^arm64$' container-arch.txt
           docker logs redroid > runtime/redroid.log 2>&1 || true
 
-      - name: Install launch and enforce 10 30 45 second liveness
+      - name: Control official base APK liveness at 10 30 45 seconds
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEV='127.0.0.1:5555'
+          mkdir -p runtime
+          timeout 15s adb -s "$DEV" uninstall "$PACKAGE" >/dev/null 2>&1 || true
+          timeout 60s adb -s "$DEV" install -r -g xuper-stable.apk | tee runtime/control-install.txt
+          grep -q 'Success' runtime/control-install.txt
+          timeout 5s adb -s "$DEV" logcat -c
+          timeout 10s adb -s "$DEV" shell cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER "$PACKAGE" | tr -d '\r' | tee runtime/control-resolved-activity.txt || true
+          RESOLVED=$(tail -1 runtime/control-resolved-activity.txt | tr -d '\r[:space:]')
+          test -n "$RESOLVED"
+          [[ "$RESOLVED" == */* ]]
+          timeout 15s adb -s "$DEV" shell am start -W -n "$RESOLVED" | tee runtime/control-launch.txt
+          sleep 3
+          INITIAL_PID=$(timeout 5s adb -s "$DEV" shell pidof "$PACKAGE" | tr -d '\r[:space:]' || true)
+          if [ -z "$INITIAL_PID" ]; then
+            timeout 10s adb -s "$DEV" logcat -d -v threadtime > runtime/control-logcat.txt || true
+            timeout 10s adb -s "$DEV" logcat -b crash -d -v threadtime > runtime/control-crash-buffer.txt || true
+            echo 'CONTROL_BASE_DIED_BEFORE_INITIAL_PID' | tee runtime/control-result.txt
+            exit 81
+          fi
+          echo "$INITIAL_PID" | tee runtime/control-pid-initial.txt
+          START=$(date +%s)
+          for target in 10 30 45; do
+            while [ $(( $(date +%s) - START )) -lt "$target" ]; do sleep 1; done
+            PID=$(timeout 5s adb -s "$DEV" shell pidof "$PACKAGE" | tr -d '\r[:space:]' || true)
+            printf '%s %s\n' "$target" "$PID" | tee -a runtime/control-pid-samples.txt
+            if [ -z "$PID" ] || [ "$PID" != "$INITIAL_PID" ]; then
+              timeout 10s adb -s "$DEV" logcat -d -v threadtime > runtime/control-logcat.txt || true
+              timeout 10s adb -s "$DEV" logcat -b crash -d -v threadtime > runtime/control-crash-buffer.txt || true
+              echo "CONTROL_BASE_FAILED_AT_${target}S" | tee runtime/control-result.txt
+              exit 82
+            fi
+          done
+          timeout 10s adb -s "$DEV" logcat -d -v threadtime > runtime/control-logcat.txt || true
+          timeout 10s adb -s "$DEV" logcat -b crash -d -v threadtime > runtime/control-crash-buffer.txt || true
+          if grep -Eqi 'FATAL EXCEPTION|UnsatisfiedLinkError|Fatal signal|SIGSEGV|SIGABRT' runtime/control-logcat.txt runtime/control-crash-buffer.txt; then
+            echo 'CONTROL_BASE_FATAL_RUNTIME_SIGNATURE_FOUND' | tee runtime/control-result.txt
+            exit 83
+          fi
+          echo 'CONTROL_BASE_LIVENESS_10_30_45_OK' | tee runtime/control-result.txt
+
+      - name: Install launch and enforce candidate 10 30 45 second liveness
         shell: bash
         run: |
           set -euo pipefail
@@ -133,18 +179,10 @@ jobs:
           grep -q 'Success' runtime/install.txt
           timeout 5s adb -s "$DEV" logcat -c
           timeout 10s adb -s "$DEV" shell cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER "$PACKAGE" | tr -d '\r' | tee runtime/resolved-activity.txt || true
-          set +e
-          timeout 15s adb -s "$DEV" shell am start -W -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p "$PACKAGE" > runtime/launch.txt 2>&1
-          LAUNCH_RC=$?
-          set -e
-          cat runtime/launch.txt
-          echo "$LAUNCH_RC" > runtime/launch-rc.txt
-          if [ "$LAUNCH_RC" -ne 0 ]; then
-            RESOLVED=$(tail -1 runtime/resolved-activity.txt | tr -d '\r[:space:]')
-            if [[ "$RESOLVED" == */* ]]; then
-              timeout 15s adb -s "$DEV" shell am start -W -n "$RESOLVED" | tee -a runtime/launch.txt
-            fi
-          fi
+          RESOLVED=$(tail -1 runtime/resolved-activity.txt | tr -d '\r[:space:]')
+          test -n "$RESOLVED"
+          [[ "$RESOLVED" == */* ]]
+          timeout 15s adb -s "$DEV" shell am start -W -n "$RESOLVED" | tee runtime/launch.txt
           sleep 3
           INITIAL_PID=$(timeout 5s adb -s "$DEV" shell pidof "$PACKAGE" | tr -d '\r[:space:]')
           test -n "$INITIAL_PID"
@@ -188,6 +226,8 @@ jobs:
         with:
           name: xuper-vod-static-fallback-redroid-arm64
           path: |
+            xuper-stable.apk
+            base-sha256.txt
             candidate.apk
             candidate-sha256.txt
             host.txt
