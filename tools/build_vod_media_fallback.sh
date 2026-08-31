@@ -71,12 +71,25 @@ if grep -q 'String;->hashCode()I' "$OUT/g2-u-patched.smali"; then
 fi
 
 SMALI_JAR="$WORK/smali-fat.jar"
+BAKSMALI_JAR="$WORK/baksmali-fat.jar"
 curl -fL --retry 3 --retry-all-errors \
   'https://github.com/baksmali/smali/releases/download/3.0.9/smali-3.0.9-fat.jar' \
   -o "$SMALI_JAR"
-mkdir -p "$WORK/smali/m6"
-cp "$OUT/g2-u-patched.smali" "$WORK/smali/m6/g2\$u.smali"
-java -jar "$SMALI_JAR" assemble "$WORK/smali" -o "$WORK/patched-classes2.dex" > "$OUT/smali-assemble.txt" 2>&1
+curl -fL --retry 3 --retry-all-errors \
+  'https://github.com/baksmali/smali/releases/download/3.0.9/baksmali-3.0.9-fat.jar' \
+  -o "$BAKSMALI_JAR"\n
+# Preserve the complete runtime DEX. The previous candidate rebuilt classes2.dex
+# from only g2$u.smali, which caused a native startup crash. Disassemble every
+# class from the recovered runtime DEX, replace only g2$u, then reassemble all.
+mkdir -p "$WORK/smali-full"
+java -jar "$BAKSMALI_JAR" disassemble "$RUNTIME_DEX" -o "$WORK/smali-full" > "$OUT/baksmali-disassemble.txt" 2>&1
+FULL_TARGET="$WORK/smali-full/m6/g2\$u.smali"
+test -s "$FULL_TARGET"
+cp "$OUT/g2-u-patched.smali" "$FULL_TARGET"
+ORIGINAL_COUNT=$(find "$WORK/smali-full" -type f -name '*.smali' | wc -l | tr -d ' ')
+echo "$ORIGINAL_COUNT" | tee "$OUT/full-smali-class-count.txt"
+test "$ORIGINAL_COUNT" -gt 100
+java -jar "$SMALI_JAR" assemble "$WORK/smali-full" -o "$WORK/patched-classes2.dex" > "$OUT/smali-assemble.txt" 2>&1
 test -s "$WORK/patched-classes2.dex"
 checksum "$WORK/patched-classes2.dex" | tee "$OUT/patched-classes2-sha256.txt"
 
@@ -108,4 +121,4 @@ if grep -Eqi 'libgadget|VodFixProvider' "$OUT/package-files.txt"; then
   exit 32
 fi
 
-echo 'STATIC_FALLBACK_BUILD_OK_NO_FRIDA_NO_AAPT' | tee "$OUT/build-result.txt"
+echo 'STATIC_FALLBACK_FULL_RUNTIME_DEX_BUILD_OK_NO_FRIDA_NO_AAPT' | tee "$OUT/build-result.txt"
