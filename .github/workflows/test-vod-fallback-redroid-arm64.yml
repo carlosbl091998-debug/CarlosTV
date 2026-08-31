@@ -32,7 +32,7 @@ jobs:
           uname -a | tee host.txt
           test "$(uname -m)" = 'aarch64'
           sudo apt-get update -qq
-          sudo apt-get install -y -qq adb apksigner zipalign unzip curl
+          sudo apt-get install -y -qq adb apksigner zipalign unzip curl kmod gcc linux-libc-dev
           export ANDROID_HOME="$HOME/android-sdk"
           mkdir -p "$ANDROID_HOME/build-tools/35.0.0"
           cp "$(command -v apksigner)" "$ANDROID_HOME/build-tools/35.0.0/apksigner"
@@ -63,30 +63,62 @@ jobs:
             exit 41
           fi
 
-      - name: Start native ARM64 Android container
+      - name: Prepare binderfs and start native ARM64 Android container
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p runtime/redroid-data
-          docker pull redroid/redroid:15.0.0-latest
+          KREL=$(uname -r)
+          sudo apt-get install -y -qq "linux-modules-extra-${KREL}" >/dev/null 2>&1 || true
+          sudo depmod -a || true
+          sudo modprobe binder_linux devices='binder,hwbinder,vndbinder' || true
+          sudo mkdir -p /dev/binderfs
+          mountpoint -q /dev/binderfs || sudo mount -t binder binder /dev/binderfs
+          cat >/tmp/mkbinder.c <<'EOF'
+          #include <errno.h>
+          #include <fcntl.h>
+          #include <stdio.h>
+          #include <sys/ioctl.h>
+          #include <unistd.h>
+          #include <linux/android/binderfs.h>
+          static int add(int fd,const char*n){struct binderfs_device d={0};snprintf(d.name,sizeof(d.name),"%s",n);if(ioctl(fd,BINDER_CTL_ADD,&d)==0||errno==EEXIST)return 0;return 1;}
+          int main(void){int fd=open("/dev/binderfs/binder-control",O_RDONLY|O_CLOEXEC);if(fd<0)return 2;int r=add(fd,"binder")|add(fd,"hwbinder")|add(fd,"vndbinder");close(fd);return r;}
+          EOF
+          gcc -O2 /tmp/mkbinder.c -o /tmp/mkbinder
+          sudo /tmp/mkbinder || true
+          for n in binder hwbinder vndbinder; do sudo chmod 666 /dev/binderfs/$n || true; done
+          find /dev/binderfs -maxdepth 1 -ls | tee binderfs.txt
+          docker pull redroid/redroid:15.0.0_64only-latest
           docker run -d --name redroid --privileged \
             -v "$PWD/runtime/redroid-data:/data" \
+            -v /dev/binderfs:/dev/binderfs \
             -p 5555:5555 \
-            redroid/redroid:15.0.0-latest \
+            redroid/redroid:15.0.0_64only-latest \
             androidboot.redroid_width=1080 \
             androidboot.redroid_height=2400 \
-            androidboot.redroid_dpi=420
+            androidboot.redroid_dpi=420 \
+            androidboot.redroid_gpu_mode=guest
+          adb kill-server || true
+          adb start-server
           for i in $(seq 1 120); do
-            if adb connect 127.0.0.1:5555 >/dev/null 2>&1 && timeout 3s adb -s 127.0.0.1:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' | grep -qx '1'; then
-              break
+            adb connect 127.0.0.1:5555 >/dev/null 2>&1 || true
+            STATE=$(adb -s 127.0.0.1:5555 get-state 2>/dev/null || true)
+            BOOT=$(timeout 3s adb -s 127.0.0.1:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+            printf '%03d state=%s boot=%s\n' "$i" "$STATE" "$BOOT" | tee -a runtime/boot-wait.txt
+            if [ "$STATE" = device ] && [ "$BOOT" = 1 ]; then break; fi
+            if [ $((i % 15)) -eq 0 ]; then
+              adb reconnect offline >/dev/null 2>&1 || true
+              docker ps -a --filter name=redroid | tee -a runtime/docker-state.txt
+              docker logs redroid > runtime/redroid-live.log 2>&1 || true
             fi
             sleep 2
           done
-          timeout 5s adb -s 127.0.0.1:5555 shell getprop sys.boot_completed | tr -d '\r' | grep -qx '1'
-          timeout 5s adb -s 127.0.0.1:5555 shell getprop ro.product.cpu.abi | tee device-abi.txt
+          test "$(adb -s 127.0.0.1:5555 get-state 2>/dev/null)" = device
+          test "$(timeout 5s adb -s 127.0.0.1:5555 shell getprop sys.boot_completed | tr -d '\r')" = 1
+          timeout 5s adb -s 127.0.0.1:5555 shell getprop ro.product.cpu.abi | tr -d '\r' | tee device-abi.txt
           grep -q '^arm64-v8a$' device-abi.txt
-          timeout 5s adb -s 127.0.0.1:5555 shell getprop ro.build.version.sdk | tee device-sdk.txt
-          docker image inspect redroid/redroid:15.0.0-latest --format '{{.Architecture}}' | tee container-arch.txt
+          timeout 5s adb -s 127.0.0.1:5555 shell getprop ro.build.version.sdk | tr -d '\r' | tee device-sdk.txt
+          docker image inspect redroid/redroid:15.0.0_64only-latest --format '{{.Architecture}}' | tee container-arch.txt
           grep -q '^arm64$' container-arch.txt
           docker logs redroid > runtime/redroid.log 2>&1 || true
 
@@ -134,6 +166,7 @@ jobs:
           timeout 5s adb -s "$DEV" logcat -d -v threadtime > runtime/logcat-final.txt 2>/dev/null || true
           timeout 5s adb -s "$DEV" shell dumpsys activity activities > runtime/activities.txt 2>/dev/null || true
           timeout 5s adb -s "$DEV" shell pidof "$PACKAGE" > runtime/pid-final.txt 2>/dev/null || true
+          timeout 5s docker ps -a --filter name=redroid > runtime/docker-ps-final.txt 2>&1 || true
           timeout 5s docker logs redroid > runtime/redroid-final.log 2>&1 || true
 
       - name: Upload candidate and diagnostics
@@ -149,6 +182,7 @@ jobs:
             adb-version.txt
             apksigner-version.txt
             zipalign-help.txt
+            binderfs.txt
             device-abi.txt
             device-sdk.txt
             container-arch.txt
