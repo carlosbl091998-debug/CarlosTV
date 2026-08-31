@@ -29,23 +29,10 @@ curl -fL --retry 3 --retry-all-errors 'https://github.com/baksmali/smali/release
 curl -fL --retry 3 --retry-all-errors 'https://github.com/baksmali/smali/releases/download/3.0.9/baksmali-3.0.9-fat.jar' -o "$BAKSMALI_JAR"
 java -jar "$BAKSMALI_JAR" disassemble "$WORK/runtime19.dex" -o "$WORK/smali-full" > "$OUT/baksmali-disassemble.txt" 2>&1
 TARGET="$WORK/smali-full/m6/g2\$u.smali"; test -s "$TARGET"; cp "$TARGET" "$OUT/g2-u-original.smali"
-python3 - "$TARGET" "$OUT/g2-u-patched.smali" <<'PY'
-import sys,re
-src,out=sys.argv[1:]
-s=open(src,encoding='utf-8').read()
-needle='invoke-virtual {v2}, Lmobile/com/requestframe/utils/response/TotalMovieList;->getQuality()Ljava/lang/String;'
-pos=[m.start() for m in re.finditer(re.escape(needle),s)]
-if len(pos)<2: raise SystemExit('SECOND_QUALITY_GATE_NOT_FOUND')
-i=pos[1]
-endpat=r'invoke-interface \{v0, v4, v2\}, Ljava/util/Map;->put\(Ljava/lang/Object;Ljava/lang/Object;\)Ljava/lang/Object;\s+\.line 234\s+goto :goto_1'
-m=re.search(endpat,s[i:])
-if not m: raise SystemExit('PATCH_END_NOT_FOUND')
-j=i+m.end()
-replacement='''# STATIC_VOD_FALLBACK: publish every non-empty movie source under canonical quality keys.\n    const-string/jumbo v3, "480p"\n    invoke-interface {v0, v3, v2}, Ljava/util/Map;->put(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;\n    const-string/jumbo v3, "720p"\n    invoke-interface {v0, v3, v2}, Ljava/util/Map;->put(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;\n    const-string/jumbo v3, "1080p"\n    invoke-interface {v0, v3, v2}, Ljava/util/Map;->put(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;\n    goto :goto_1'''
-s2=s[:i]+replacement+s[j:]
-open(out,'w',encoding='utf-8').write(s2)
-PY
-cp "$OUT/g2-u-patched.smali" "$TARGET"; grep -F 'STATIC_VOD_FALLBACK' "$TARGET"
+test -s tools/patches/g2_u_vod_fallback.smali
+cp tools/patches/g2_u_vod_fallback.smali "$TARGET"
+cp "$TARGET" "$OUT/g2-u-patched.smali"
+grep -F 'STATIC_VOD_FALLBACK' "$TARGET"
 java -jar "$SMALI_JAR" assemble "$WORK/smali-full" -o "$WORK/classes2.dex" > "$OUT/smali-assemble.txt" 2>&1; test -s "$WORK/classes2.dex"
 
 cat > "$WORK/stub/com/secneo/apkwrapper/AW.smali" <<'EOF'
