@@ -132,7 +132,19 @@ jobs:
           timeout 60s adb -s "$DEV" install -r -g candidate.apk | tee runtime/install.txt
           grep -q 'Success' runtime/install.txt
           timeout 5s adb -s "$DEV" logcat -c
-          timeout 10s adb -s "$DEV" shell monkey -p "$PACKAGE" -c android.intent.category.LAUNCHER 1 > runtime/launch.txt 2>&1
+          timeout 10s adb -s "$DEV" shell cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER "$PACKAGE" | tr -d '\r' | tee runtime/resolved-activity.txt || true
+          set +e
+          timeout 15s adb -s "$DEV" shell am start -W -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p "$PACKAGE" > runtime/launch.txt 2>&1
+          LAUNCH_RC=$?
+          set -e
+          cat runtime/launch.txt
+          echo "$LAUNCH_RC" > runtime/launch-rc.txt
+          if [ "$LAUNCH_RC" -ne 0 ]; then
+            RESOLVED=$(tail -1 runtime/resolved-activity.txt | tr -d '\r[:space:]')
+            if [[ "$RESOLVED" == */* ]]; then
+              timeout 15s adb -s "$DEV" shell am start -W -n "$RESOLVED" | tee -a runtime/launch.txt
+            fi
+          fi
           sleep 3
           INITIAL_PID=$(timeout 5s adb -s "$DEV" shell pidof "$PACKAGE" | tr -d '\r[:space:]')
           test -n "$INITIAL_PID"
@@ -168,6 +180,7 @@ jobs:
           timeout 5s adb -s "$DEV" shell pidof "$PACKAGE" > runtime/pid-final.txt 2>/dev/null || true
           timeout 5s docker ps -a --filter name=redroid > runtime/docker-ps-final.txt 2>&1 || true
           timeout 5s docker logs redroid > runtime/redroid-final.log 2>&1 || true
+          sudo rm -rf runtime/redroid-data || true
 
       - name: Upload candidate and diagnostics
         if: always()
