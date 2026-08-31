@@ -8,7 +8,6 @@ on:
       - 'tools/build_vod_media_fallback.sh'
       - '.github/workflows/test-vod-fallback-redroid-arm64.yml'
 
-# Validation requires a real arm64-v8a Android userspace and identical PID survival at 10/30/45 s.
 jobs:
   arm64-redroid-test:
     runs-on: ubuntu-24.04-arm
@@ -108,11 +107,6 @@ jobs:
             BOOT=$(timeout 3s adb -s 127.0.0.1:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
             printf '%03d state=%s boot=%s\n' "$i" "$STATE" "$BOOT" | tee -a runtime/boot-wait.txt
             if [ "$STATE" = device ] && [ "$BOOT" = 1 ]; then break; fi
-            if [ $((i % 15)) -eq 0 ]; then
-              adb reconnect offline >/dev/null 2>&1 || true
-              docker ps -a --filter name=redroid | tee -a runtime/docker-state.txt
-              docker logs redroid > runtime/redroid-live.log 2>&1 || true
-            fi
             sleep 2
           done
           test "$(adb -s 127.0.0.1:5555 get-state 2>/dev/null)" = device
@@ -122,7 +116,6 @@ jobs:
           timeout 5s adb -s 127.0.0.1:5555 shell getprop ro.build.version.sdk | tr -d '\r' | tee device-sdk.txt
           docker image inspect redroid/redroid:15.0.0_64only-latest --format '{{.Architecture}}' | tee container-arch.txt
           grep -q '^arm64$' container-arch.txt
-          docker logs redroid > runtime/redroid.log 2>&1 || true
 
       - name: Control official base APK liveness at 10 30 45 seconds
         shell: bash
@@ -134,36 +127,24 @@ jobs:
           timeout 60s adb -s "$DEV" install -r -g xuper-stable.apk | tee runtime/control-install.txt
           grep -q 'Success' runtime/control-install.txt
           timeout 5s adb -s "$DEV" logcat -c
-          timeout 10s adb -s "$DEV" shell cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER "$PACKAGE" | tr -d '\r' | tee runtime/control-resolved-activity.txt || true
-          RESOLVED=$(tail -1 runtime/control-resolved-activity.txt | tr -d '\r[:space:]')
-          test -n "$RESOLVED"
-          [[ "$RESOLVED" == */* ]]
+          RESOLVED=$(timeout 10s adb -s "$DEV" shell cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER "$PACKAGE" | tail -1 | tr -d '\r[:space:]')
+          test -n "$RESOLVED"; [[ "$RESOLVED" == */* ]]
           timeout 15s adb -s "$DEV" shell am start -W -n "$RESOLVED" | tee runtime/control-launch.txt
           sleep 3
           INITIAL_PID=$(timeout 5s adb -s "$DEV" shell pidof "$PACKAGE" | tr -d '\r[:space:]' || true)
-          if [ -z "$INITIAL_PID" ]; then
-            timeout 10s adb -s "$DEV" logcat -d -v threadtime > runtime/control-logcat.txt || true
-            timeout 10s adb -s "$DEV" logcat -b crash -d -v threadtime > runtime/control-crash-buffer.txt || true
-            echo 'CONTROL_BASE_DIED_BEFORE_INITIAL_PID' | tee runtime/control-result.txt
-            exit 81
-          fi
+          test -n "$INITIAL_PID"
           echo "$INITIAL_PID" | tee runtime/control-pid-initial.txt
           START=$(date +%s)
           for target in 10 30 45; do
             while [ $(( $(date +%s) - START )) -lt "$target" ]; do sleep 1; done
             PID=$(timeout 5s adb -s "$DEV" shell pidof "$PACKAGE" | tr -d '\r[:space:]' || true)
             printf '%s %s\n' "$target" "$PID" | tee -a runtime/control-pid-samples.txt
-            if [ -z "$PID" ] || [ "$PID" != "$INITIAL_PID" ]; then
-              timeout 10s adb -s "$DEV" logcat -d -v threadtime > runtime/control-logcat.txt || true
-              timeout 10s adb -s "$DEV" logcat -b crash -d -v threadtime > runtime/control-crash-buffer.txt || true
-              echo "CONTROL_BASE_FAILED_AT_${target}S" | tee runtime/control-result.txt
-              exit 82
-            fi
+            test -n "$PID"; test "$PID" = "$INITIAL_PID"
           done
           timeout 10s adb -s "$DEV" logcat -d -v threadtime > runtime/control-logcat.txt || true
           timeout 10s adb -s "$DEV" logcat -b crash -d -v threadtime > runtime/control-crash-buffer.txt || true
-          if grep -Eqi 'FATAL EXCEPTION|UnsatisfiedLinkError|Fatal signal|SIGSEGV|SIGABRT' runtime/control-logcat.txt runtime/control-crash-buffer.txt; then
-            echo 'CONTROL_BASE_FATAL_RUNTIME_SIGNATURE_FOUND' | tee runtime/control-result.txt
+          if grep -Eqi "$PACKAGE.*(FATAL EXCEPTION|UnsatisfiedLinkError|Fatal signal|SIGSEGV|SIGABRT)|(FATAL EXCEPTION|UnsatisfiedLinkError|Fatal signal|SIGSEGV|SIGABRT).*$PACKAGE" runtime/control-logcat.txt runtime/control-crash-buffer.txt; then
+            echo 'CONTROL_BASE_APP_FATAL_RUNTIME_SIGNATURE_FOUND' | tee runtime/control-result.txt
             exit 83
           fi
           echo 'CONTROL_BASE_LIVENESS_10_30_45_OK' | tee runtime/control-result.txt
@@ -178,10 +159,8 @@ jobs:
           timeout 60s adb -s "$DEV" install -r -g candidate.apk | tee runtime/install.txt
           grep -q 'Success' runtime/install.txt
           timeout 5s adb -s "$DEV" logcat -c
-          timeout 10s adb -s "$DEV" shell cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER "$PACKAGE" | tr -d '\r' | tee runtime/resolved-activity.txt || true
-          RESOLVED=$(tail -1 runtime/resolved-activity.txt | tr -d '\r[:space:]')
-          test -n "$RESOLVED"
-          [[ "$RESOLVED" == */* ]]
+          RESOLVED=$(timeout 10s adb -s "$DEV" shell cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER "$PACKAGE" | tail -1 | tr -d '\r[:space:]')
+          test -n "$RESOLVED"; [[ "$RESOLVED" == */* ]]
           timeout 15s adb -s "$DEV" shell am start -W -n "$RESOLVED" | tee runtime/launch.txt
           sleep 3
           INITIAL_PID=$(timeout 5s adb -s "$DEV" shell pidof "$PACKAGE" | tr -d '\r[:space:]')
@@ -192,15 +171,14 @@ jobs:
             while [ $(( $(date +%s) - START )) -lt "$target" ]; do sleep 1; done
             PID=$(timeout 5s adb -s "$DEV" shell pidof "$PACKAGE" | tr -d '\r[:space:]')
             printf '%s %s\n' "$target" "$PID" | tee -a runtime/pid-samples.txt
-            test -n "$PID"
-            test "$PID" = "$INITIAL_PID"
+            test -n "$PID"; test "$PID" = "$INITIAL_PID"
             FG=$(timeout 5s adb -s "$DEV" shell dumpsys activity activities | grep -m1 'mResumedActivity' || true)
             printf '%s %s\n' "$target" "$FG" | tee -a runtime/foreground-samples.txt
           done
           timeout 10s adb -s "$DEV" logcat -d -v threadtime > runtime/logcat.txt || true
           timeout 10s adb -s "$DEV" logcat -b crash -d -v threadtime > runtime/crash-buffer.txt || true
-          if grep -Eqi 'FATAL EXCEPTION|UnsatisfiedLinkError|Fatal signal|SIGSEGV|SIGABRT' runtime/logcat.txt runtime/crash-buffer.txt; then
-            echo 'FATAL_RUNTIME_SIGNATURE_FOUND' | tee runtime/result.txt
+          if grep -Eqi "$PACKAGE.*(FATAL EXCEPTION|UnsatisfiedLinkError|Fatal signal|SIGSEGV|SIGABRT)|(FATAL EXCEPTION|UnsatisfiedLinkError|Fatal signal|SIGSEGV|SIGABRT).*$PACKAGE" runtime/logcat.txt runtime/crash-buffer.txt; then
+            echo 'APP_FATAL_RUNTIME_SIGNATURE_FOUND' | tee runtime/result.txt
             exit 74
           fi
           echo 'ARM64_ANDROID_CONTAINER_LIVENESS_10_30_45_OK' | tee runtime/result.txt
@@ -216,8 +194,6 @@ jobs:
           timeout 5s adb -s "$DEV" logcat -d -v threadtime > runtime/logcat-final.txt 2>/dev/null || true
           timeout 5s adb -s "$DEV" shell dumpsys activity activities > runtime/activities.txt 2>/dev/null || true
           timeout 5s adb -s "$DEV" shell pidof "$PACKAGE" > runtime/pid-final.txt 2>/dev/null || true
-          timeout 5s docker ps -a --filter name=redroid > runtime/docker-ps-final.txt 2>&1 || true
-          timeout 5s docker logs redroid > runtime/redroid-final.log 2>&1 || true
           sudo rm -rf runtime/redroid-data || true
 
       - name: Upload candidate and diagnostics
