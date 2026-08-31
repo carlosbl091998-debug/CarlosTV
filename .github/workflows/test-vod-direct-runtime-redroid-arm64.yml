@@ -1,0 +1,185 @@
+name: Validate Xuper direct runtime VOD on native ARM64 Android container
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [xuper-vod-media-fallback]
+    paths:
+      - 'tools/build_vod_direct_runtime.sh'
+      - '.github/workflows/test-vod-direct-runtime-redroid-arm64.yml'
+
+jobs:
+  arm64-redroid-direct-runtime:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    env:
+      PACKAGE: com.msandroid.mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Prepare native ARM64 Android tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = 'aarch64'
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq adb apksigner zipalign unzip curl kmod gcc linux-libc-dev
+          export ANDROID_HOME="$HOME/android-sdk"
+          mkdir -p "$ANDROID_HOME/build-tools/35.0.0"
+          cp "$(command -v apksigner)" "$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          cp "$(command -v zipalign)" "$ANDROID_HOME/build-tools/35.0.0/zipalign"
+          chmod +x "$ANDROID_HOME/build-tools/35.0.0/apksigner" "$ANDROID_HOME/build-tools/35.0.0/zipalign"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "$(dirname "$(command -v adb)")" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
+
+      - name: Build direct runtime candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash tools/build_vod_direct_runtime.sh
+          CANDIDATE='diagnostics-vod-direct-runtime/Xuper-6.2.4-VOD-DirectRuntime-NoFrida.apk'
+          test -s "$CANDIDATE"
+          test -s xuper-stable.apk
+          cp "$CANDIDATE" candidate.apk
+          sha256sum xuper-stable.apk | tee base-sha256.txt
+          sha256sum candidate.apk | tee candidate-sha256.txt
+
+      - name: Start native ARM64 Android container
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p runtime/redroid-data
+          KREL=$(uname -r)
+          sudo apt-get install -y -qq "linux-modules-extra-${KREL}" >/dev/null 2>&1 || true
+          sudo depmod -a || true
+          sudo modprobe binder_linux devices='binder,hwbinder,vndbinder' || true
+          sudo mkdir -p /dev/binderfs
+          mountpoint -q /dev/binderfs || sudo mount -t binder binder /dev/binderfs
+          cat >/tmp/mkbinder.c <<'EOF'
+          #include <errno.h>
+          #include <fcntl.h>
+          #include <stdio.h>
+          #include <sys/ioctl.h>
+          #include <unistd.h>
+          #include <linux/android/binderfs.h>
+          static int add(int fd,const char*n){struct binderfs_device d={0};snprintf(d.name,sizeof(d.name),"%s",n);if(ioctl(fd,BINDER_CTL_ADD,&d)==0||errno==EEXIST)return 0;return 1;}
+          int main(void){int fd=open("/dev/binderfs/binder-control",O_RDONLY|O_CLOEXEC);if(fd<0)return 2;int r=add(fd,"binder")|add(fd,"hwbinder")|add(fd,"vndbinder");close(fd);return r;}
+          EOF
+          gcc -O2 /tmp/mkbinder.c -o /tmp/mkbinder
+          sudo /tmp/mkbinder || true
+          for n in binder hwbinder vndbinder; do sudo chmod 666 /dev/binderfs/$n || true; done
+          docker pull redroid/redroid:15.0.0_64only-latest
+          docker run -d --name redroid --privileged \
+            -v "$PWD/runtime/redroid-data:/data" \
+            -v /dev/binderfs:/dev/binderfs \
+            -p 5555:5555 \
+            redroid/redroid:15.0.0_64only-latest \
+            androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2400 \
+            androidboot.redroid_dpi=420 \
+            androidboot.redroid_gpu_mode=guest
+          adb kill-server || true
+          adb start-server
+          for i in $(seq 1 120); do
+            adb connect 127.0.0.1:5555 >/dev/null 2>&1 || true
+            STATE=$(adb -s 127.0.0.1:5555 get-state 2>/dev/null || true)
+            BOOT=$(timeout 3s adb -s 127.0.0.1:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+            if [ "$STATE" = device ] && [ "$BOOT" = 1 ]; then break; fi
+            sleep 2
+          done
+          test "$(adb -s 127.0.0.1:5555 get-state 2>/dev/null)" = device
+          test "$(timeout 5s adb -s 127.0.0.1:5555 shell getprop sys.boot_completed | tr -d '\r')" = 1
+          timeout 5s adb -s 127.0.0.1:5555 shell getprop ro.product.cpu.abi | tr -d '\r' | tee device-abi.txt
+          grep -q '^arm64-v8a$' device-abi.txt
+          timeout 5s adb -s 127.0.0.1:5555 shell getprop ro.build.version.sdk | tr -d '\r' | tee device-sdk.txt
+
+      - name: Control base 10 30 45 second liveness
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEV='127.0.0.1:5555'
+          timeout 15s adb -s "$DEV" uninstall "$PACKAGE" >/dev/null 2>&1 || true
+          timeout 60s adb -s "$DEV" install -r -g xuper-stable.apk | tee runtime/control-install.txt
+          grep -q 'Success' runtime/control-install.txt
+          RESOLVED=$(timeout 10s adb -s "$DEV" shell cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER "$PACKAGE" | tail -1 | tr -d '\r[:space:]')
+          timeout 15s adb -s "$DEV" shell am start -W -n "$RESOLVED" > runtime/control-launch.txt
+          sleep 3
+          INITIAL_PID=$(timeout 5s adb -s "$DEV" shell pidof "$PACKAGE" | tr -d '\r[:space:]')
+          test -n "$INITIAL_PID"
+          START=$(date +%s)
+          for target in 10 30 45; do
+            while [ $(( $(date +%s) - START )) -lt "$target" ]; do sleep 1; done
+            PID=$(timeout 5s adb -s "$DEV" shell pidof "$PACKAGE" | tr -d '\r[:space:]' || true)
+            printf '%s %s\n' "$target" "$PID" | tee -a runtime/control-pid-samples.txt
+            test -n "$PID"; test "$PID" = "$INITIAL_PID"
+          done
+          echo 'CONTROL_BASE_LIVENESS_10_30_45_OK' | tee runtime/control-result.txt
+
+      - name: Candidate 10 30 45 second liveness
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEV='127.0.0.1:5555'
+          timeout 15s adb -s "$DEV" uninstall "$PACKAGE" >/dev/null 2>&1 || true
+          timeout 60s adb -s "$DEV" install -r -g candidate.apk | tee runtime/install.txt
+          grep -q 'Success' runtime/install.txt
+          timeout 5s adb -s "$DEV" logcat -c
+          RESOLVED=$(timeout 10s adb -s "$DEV" shell cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER "$PACKAGE" | tail -1 | tr -d '\r[:space:]')
+          test -n "$RESOLVED"; [[ "$RESOLVED" == */* ]]
+          timeout 15s adb -s "$DEV" shell am start -W -n "$RESOLVED" | tee runtime/launch.txt
+          sleep 3
+          INITIAL_PID=$(timeout 5s adb -s "$DEV" shell pidof "$PACKAGE" | tr -d '\r[:space:]' || true)
+          test -n "$INITIAL_PID"
+          echo "$INITIAL_PID" | tee runtime/pid-initial.txt
+          START=$(date +%s)
+          for target in 10 30 45; do
+            while [ $(( $(date +%s) - START )) -lt "$target" ]; do sleep 1; done
+            PID=$(timeout 5s adb -s "$DEV" shell pidof "$PACKAGE" | tr -d '\r[:space:]' || true)
+            printf '%s %s\n' "$target" "$PID" | tee -a runtime/pid-samples.txt
+            test -n "$PID"; test "$PID" = "$INITIAL_PID"
+          done
+          timeout 10s adb -s "$DEV" logcat -d -v threadtime > runtime/logcat.txt || true
+          timeout 10s adb -s "$DEV" logcat -b crash -d -v threadtime > runtime/crash-buffer.txt || true
+          if grep -Eqi "$PACKAGE.*(FATAL EXCEPTION|UnsatisfiedLinkError|Fatal signal|SIGSEGV|SIGABRT)|(FATAL EXCEPTION|UnsatisfiedLinkError|Fatal signal|SIGSEGV|SIGABRT).*$PACKAGE" runtime/logcat.txt runtime/crash-buffer.txt; then
+            echo 'APP_FATAL_RUNTIME_SIGNATURE_FOUND' | tee runtime/result.txt
+            exit 74
+          fi
+          echo 'ARM64_ANDROID_CONTAINER_LIVENESS_10_30_45_OK' | tee runtime/result.txt
+
+      - name: Capture diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          DEV='127.0.0.1:5555'
+          timeout 5s adb -s "$DEV" exec-out screencap -p > runtime/final-screen.png 2>/dev/null || true
+          timeout 5s adb -s "$DEV" logcat -d -v threadtime > runtime/logcat-final.txt 2>/dev/null || true
+          timeout 5s adb -s "$DEV" shell pidof "$PACKAGE" > runtime/pid-final.txt 2>/dev/null || true
+          sudo rm -rf runtime/redroid-data || true
+
+      - name: Upload candidate and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xuper-vod-direct-runtime-redroid-arm64
+          path: |
+            xuper-stable.apk
+            base-sha256.txt
+            candidate.apk
+            candidate-sha256.txt
+            device-abi.txt
+            device-sdk.txt
+            diagnostics-vod-direct-runtime/**
+            diagnostics-vod-media-fallback/**
+            runtime/**
+          retention-days: 7
