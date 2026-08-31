@@ -18,11 +18,11 @@ jobs:
           set -euo pipefail
           mkdir -p diag
           sudo apt-get update -qq
-          sudo apt-get install -y -qq android-tools-adb curl xz-utils kmod gcc linux-libc-dev python3-pip >/dev/null
+          sudo apt-get install -y -qq android-tools-adb curl xz-utils kmod gcc linux-libc-dev python3-pip file >/dev/null
           python3 -m pip install --break-system-packages --disable-pip-version-check 'frida==17.2.17' frida-tools >/dev/null
           curl -fL --retry 4 --retry-all-errors 'https://github.com/frida/frida/releases/download/17.2.17/frida-server-17.2.17-android-arm64.xz' -o /tmp/fs.xz
           xz -dc /tmp/fs.xz >/tmp/frida-server && chmod +x /tmp/frida-server
-          /tmp/frida-server --version | tee diag/frida-server-host-version.txt
+          file /tmp/frida-server | tee diag/frida-server-file.txt
           KREL=$(uname -r)
           sudo apt-get install -y -qq "linux-modules-extra-${KREL}" >/dev/null 2>&1 || true
           sudo depmod -a || true
@@ -82,6 +82,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: frida-arm64-probe-v2
+          name: frida-arm64-probe-v3
           path: diag/**
           retention-days: 7
