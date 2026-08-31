@@ -1,15 +1,15 @@
-name: Validate Xuper direct runtime VOD on native ARM64 Android container
+name: Validate Xuper shell-preserving VOD fallback on native ARM64 Android container
 
 on:
   workflow_dispatch:
   push:
     branches: [xuper-vod-media-fallback]
     paths:
-      - 'tools/build_vod_direct_runtime.sh'
+      - 'tools/build_vod_media_fallback.sh'
       - '.github/workflows/test-vod-direct-runtime-redroid-arm64.yml'
 
 jobs:
-  arm64-redroid-direct-runtime:
+  arm64-redroid-static-fallback:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     permissions:
@@ -40,19 +40,21 @@ jobs:
           echo "$(dirname "$(command -v adb)")" >> "$GITHUB_PATH"
           echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
 
-      - name: Build direct runtime candidate
+      - name: Build shell-preserving VOD fallback candidate
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          bash tools/build_vod_direct_runtime.sh
-          CANDIDATE='diagnostics-vod-direct-runtime/Xuper-6.2.4-VOD-DirectRuntime-NoFrida.apk'
+          bash tools/build_vod_media_fallback.sh
+          CANDIDATE='diagnostics-vod-media-fallback/Xuper-6.2.4-VOD-StaticFallback-NoFrida.apk'
           test -s "$CANDIDATE"
           test -s xuper-stable.apk
           cp "$CANDIDATE" candidate.apk
           sha256sum xuper-stable.apk | tee base-sha256.txt
           sha256sum candidate.apk | tee candidate-sha256.txt
+          unzip -l candidate.apk | grep -q 'classes.dex'
+          unzip -l candidate.apk | grep -q 'classes2.dex'
 
       - name: Start native ARM64 Android container
         shell: bash
@@ -171,7 +173,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: xuper-vod-direct-runtime-redroid-arm64
+          name: xuper-vod-static-fallback-redroid-arm64
           path: |
             xuper-stable.apk
             base-sha256.txt
@@ -179,7 +181,6 @@ jobs:
             candidate-sha256.txt
             device-abi.txt
             device-sdk.txt
-            diagnostics-vod-direct-runtime/**
             diagnostics-vod-media-fallback/**
             runtime/**
           retention-days: 7
