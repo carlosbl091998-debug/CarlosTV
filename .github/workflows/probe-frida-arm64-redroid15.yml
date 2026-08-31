@@ -12,15 +12,17 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - name: Boot Android and verify Frida through adb forward
+      - name: Boot Android and diagnose Frida through adb forward
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p diag
           sudo apt-get update -qq
           sudo apt-get install -y -qq android-tools-adb curl xz-utils kmod gcc linux-libc-dev python3-pip >/dev/null
           python3 -m pip install --break-system-packages --disable-pip-version-check 'frida==17.2.17' frida-tools >/dev/null
           curl -fL --retry 4 --retry-all-errors 'https://github.com/frida/frida/releases/download/17.2.17/frida-server-17.2.17-android-arm64.xz' -o /tmp/fs.xz
           xz -dc /tmp/fs.xz >/tmp/frida-server && chmod +x /tmp/frida-server
+          /tmp/frida-server --version | tee diag/frida-server-host-version.txt
           KREL=$(uname -r)
           sudo apt-get install -y -qq "linux-modules-extra-${KREL}" >/dev/null 2>&1 || true
           sudo depmod -a || true
@@ -44,19 +46,42 @@ jobs:
           adb start-server
           for i in $(seq 1 120); do adb connect 127.0.0.1:5555 >/dev/null 2>&1 || true; [ "$(adb -s 127.0.0.1:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ] && break; [ "$i" = 120 ] && exit 72; sleep 2; done
           test "$(adb -s 127.0.0.1:5555 shell getprop ro.product.cpu.abi | tr -d '\r')" = arm64-v8a
+          adb -s 127.0.0.1:5555 shell id | tee diag/android-id.txt
+          adb -s 127.0.0.1:5555 shell 'ps -A -o USER,PID,PPID,NAME' > diag/android-ps-before.txt || adb -s 127.0.0.1:5555 shell ps -A > diag/android-ps-before.txt
+          adb -s 127.0.0.1:5555 shell pidof system_server | tee diag/system-server-pid.txt || true
+          grep -E 'system_server|zygote' diag/android-ps-before.txt | tee diag/android-core-processes.txt || true
           adb -s 127.0.0.1:5555 push /tmp/frida-server /data/local/tmp/frida-server >/dev/null
           adb -s 127.0.0.1:5555 shell chmod 755 /data/local/tmp/frida-server
+          adb -s 127.0.0.1:5555 shell '/data/local/tmp/frida-server --version' | tee diag/frida-server-device-version.txt
           adb -s 127.0.0.1:5555 shell 'killall frida-server >/dev/null 2>&1 || true'
-          adb -s 127.0.0.1:5555 shell '/data/local/tmp/frida-server >/data/local/tmp/frida.log 2>&1 &'
-          adb -s 127.0.0.1:5555 forward tcp:27042 tcp:27042
+          adb -s 127.0.0.1:5555 shell 'nohup /data/local/tmp/frida-server >/data/local/tmp/frida.log 2>&1 </dev/null &'
           sleep 2
-          frida-ps -H 127.0.0.1:27042 | tee frida-ps.txt
-          adb -s 127.0.0.1:5555 shell cat /data/local/tmp/frida.log > frida-server.log 2>&1 || true
+          adb -s 127.0.0.1:5555 shell 'ps -A | grep -E "frida|system_server|zygote"' | tee diag/android-ps-after.txt || true
+          adb -s 127.0.0.1:5555 shell cat /data/local/tmp/frida.log > diag/frida-server.log 2>&1 || true
+          adb -s 127.0.0.1:5555 forward --remove-all || true
+          adb -s 127.0.0.1:5555 forward tcp:27042 tcp:27042
+          adb -s 127.0.0.1:5555 forward tcp:27043 tcp:27043
+          sleep 2
+          set +e
+          timeout 15s frida-ps -H 127.0.0.1:27042 > diag/frida-ps-host.txt 2>&1
+          echo $? > diag/frida-host-rc.txt
+          timeout 15s frida-ps -U > diag/frida-ps-usb.txt 2>&1
+          echo $? > diag/frida-usb-rc.txt
+          timeout 15s frida-ls-devices > diag/frida-devices.txt 2>&1
+          set -e
+          cat diag/frida-ps-host.txt || true
+          cat diag/frida-ps-usb.txt || true
+          cat diag/frida-devices.txt || true
+          test -s diag/system-server-pid.txt
+          if grep -q 'system_server' diag/frida-ps-host.txt || grep -q 'system_server' diag/frida-ps-usb.txt; then
+            echo FRIDA_ENUMERATION_OK | tee diag/result.txt
+          else
+            echo FRIDA_ENUMERATION_FAILED | tee diag/result.txt
+            exit 73
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: frida-arm64-probe
-          path: |
-            frida-ps.txt
-            frida-server.log
+          name: frida-arm64-probe-v2
+          path: diag/**
           retention-days: 7
