@@ -55,6 +55,53 @@ cat > "$WORK/stub/com/secneo/apkwrapper/AP.smali" <<'EOF'
     return-void
 .end method
 EOF
+cat > "$WORK/stub/com/secneo/apkwrapper/CP.smali" <<'EOF'
+.class public Lcom/secneo/apkwrapper/CP;
+.super Landroid/content/ContentProvider;
+.source "CP.java"
+
+.method public constructor <init>()V
+    .locals 0
+    invoke-direct {p0}, Landroid/content/ContentProvider;-><init>()V
+    return-void
+.end method
+
+.method public onCreate()Z
+    .locals 1
+    const/4 v0, 0x1
+    return v0
+.end method
+
+.method public getType(Landroid/net/Uri;)Ljava/lang/String;
+    .locals 1
+    const/4 v0, 0x0
+    return-object v0
+.end method
+
+.method public insert(Landroid/net/Uri;Landroid/content/ContentValues;)Landroid/net/Uri;
+    .locals 1
+    const/4 v0, 0x0
+    return-object v0
+.end method
+
+.method public query(Landroid/net/Uri;[Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;)Landroid/database/Cursor;
+    .locals 1
+    const/4 v0, 0x0
+    return-object v0
+.end method
+
+.method public delete(Landroid/net/Uri;Ljava/lang/String;[Ljava/lang/String;)I
+    .locals 1
+    const/4 v0, 0x0
+    return v0
+.end method
+
+.method public update(Landroid/net/Uri;Landroid/content/ContentValues;Ljava/lang/String;[Ljava/lang/String;)I
+    .locals 1
+    const/4 v0, 0x0
+    return v0
+.end method
+EOF
 java -jar "$SMALI_JAR" assemble "$WORK/stub" -o "$WORK/classes3.dex" > "$OUT/stub-assemble.txt" 2>&1; test -s "$WORK/classes3.dex"
 
 cp "$BASE" "$WORK/unsigned.apk"
