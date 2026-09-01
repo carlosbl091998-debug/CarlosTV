@@ -107,6 +107,12 @@ jobs:
           adb -s 127.0.0.1:5555 logcat -d -v threadtime > runtime/logcat-final.txt 2>/dev/null || true
           adb -s 127.0.0.1:5555 logcat -b crash -d -v threadtime > runtime/crash-final.txt 2>/dev/null || true
           adb -s 127.0.0.1:5555 shell pidof "$PACKAGE" > runtime/pid-final.txt 2>/dev/null || true
+          echo '=== PID FINAL ==='
+          cat runtime/pid-final.txt || true
+          echo '=== CRASH BUFFER ==='
+          cat runtime/crash-final.txt || true
+          echo '=== RELEVANT LOGCAT ==='
+          grep -Ei -C 8 'FATAL EXCEPTION|AndroidRuntime|UnsatisfiedLinkError|ClassNotFoundException|NoClassDefFoundError|VerifyError|DexFile|SIGSEGV|SIGABRT|Fatal signal|com\.msandroid\.mobile|DownloadFileProvider' runtime/logcat-final.txt | tail -n 600 || true
           sudo rm -rf runtime/redroid-data || true
       - name: Upload candidate and diagnostics
         if: always()
