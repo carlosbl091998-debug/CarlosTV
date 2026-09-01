@@ -24,11 +24,21 @@ for entry in $(unzip -Z1 "$APK" | grep -E '^classes([0-9]+)?[.]dex$' | sort -V);
 import pathlib,re,sys
 p=pathlib.Path(sys.argv[1])
 s=p.read_text()
-old=s
-s=re.sub(r'(?m)^\.class\s+(.+?)\bfinal\s+(Lcom/mobile/brasiltv/app/App;)$', r'.class \1\2', s, count=1)
-if s==old:
-    raise SystemExit('App class was not final or class declaration not matched')
+# Allow the wrapper Application to subclass the recovered real App.
+s,n1=re.subn(r'(?m)^\.class\s+(.+?)\bfinal\s+(Lcom/mobile/brasiltv/app/App;)$', r'.class \1\2', s, count=1)
+if n1 != 1:
+    raise SystemExit('App class final flag not matched exactly once')
+# App.c() is the FirebaseInstallations startup hook seen in the native ARM64 crash stack.
+# Keep the rest of App.onCreate intact, but make that optional telemetry/bootstrap hook a no-op.
+pat=r'(?ms)^\.method\s+([^\n]*\s)?c\(\)V\n.*?^\.end method$'
+m=re.search(pat,s)
+if not m:
+    raise SystemExit('App.c()V not found')
+header=m.group(0).splitlines()[0]
+replacement=header+'\n    .locals 0\n    return-void\n.end method'
+s=s[:m.start()]+replacement+s[m.end():]
 p.write_text(s)
+print('APP_C_FIREBASE_HOOK_NOOP_OK')
 PY
       cp "$target" "$PATCH/App-patched.smali"
       java -jar "$SMALI_JAR" assemble "$dir" -o "$PATCH/$entry.new"
@@ -47,5 +57,5 @@ zipalign -f 4 "$PATCH/unsigned.apk" "$PATCH/aligned.apk"
 apksigner sign --ks "$KEYSTORE" --ks-pass pass:android --key-pass pass:android --ks-key-alias androiddebugkey --out "$PATCH/signed.apk" "$PATCH/aligned.apk"
 apksigner verify --verbose "$PATCH/signed.apk" >/dev/null
 cp "$PATCH/signed.apk" "$APK"
-echo 'APP_FINAL_REMOVED_OK'
+echo 'APP_FINAL_REMOVED_AND_FIREBASE_HOOK_SKIPPED_OK'
 sha256sum "$APK"
