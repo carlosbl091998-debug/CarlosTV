@@ -8,7 +8,6 @@ on:
       - 'tools/build_vod_media_fallback.sh'
       - 'tools/patch_download_file_provider.sh'
       - 'tools/patch_app_not_final.sh'
-      - 'tools/patch_firebase_provider.sh'
       - 'tools/repair_recovered_dex_headers.sh'
       - '.github/workflows/test-vod-download-provider-redroid-arm64.yml'
 
@@ -41,7 +40,6 @@ jobs:
           bash tools/repair_recovered_dex_headers.sh diagnostics-vod-media-fallback/Xuper-6.2.4-VOD-StaticFallback-NoFrida.apk
           bash tools/patch_download_file_provider.sh diagnostics-vod-media-fallback/Xuper-6.2.4-VOD-StaticFallback-NoFrida.apk
           bash tools/patch_app_not_final.sh diagnostics-vod-media-fallback/Xuper-6.2.4-VOD-StaticFallback-NoFrida.apk
-          bash tools/patch_firebase_provider.sh diagnostics-vod-media-fallback/Xuper-6.2.4-VOD-StaticFallback-NoFrida.apk
           cp diagnostics-vod-media-fallback/Xuper-6.2.4-VOD-StaticFallback-NoFrida.apk candidate.apk
           sha256sum candidate.apk | tee candidate-sha256.txt
           apksigner verify --verbose candidate.apk
