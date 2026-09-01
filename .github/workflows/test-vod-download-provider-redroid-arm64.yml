@@ -8,6 +8,7 @@ on:
       - 'tools/build_vod_media_fallback.sh'
       - 'tools/patch_download_file_provider.sh'
       - 'tools/patch_app_not_final.sh'
+      - 'tools/patch_connection_result_get_error_code.sh'
       - 'tools/repair_recovered_dex_headers.sh'
       - '.github/workflows/test-vod-download-provider-redroid-arm64.yml'
 
@@ -40,6 +41,7 @@ jobs:
           bash tools/repair_recovered_dex_headers.sh diagnostics-vod-media-fallback/Xuper-6.2.4-VOD-StaticFallback-NoFrida.apk
           bash tools/patch_download_file_provider.sh diagnostics-vod-media-fallback/Xuper-6.2.4-VOD-StaticFallback-NoFrida.apk
           bash tools/patch_app_not_final.sh diagnostics-vod-media-fallback/Xuper-6.2.4-VOD-StaticFallback-NoFrida.apk
+          bash tools/patch_connection_result_get_error_code.sh diagnostics-vod-media-fallback/Xuper-6.2.4-VOD-StaticFallback-NoFrida.apk
           cp diagnostics-vod-media-fallback/Xuper-6.2.4-VOD-StaticFallback-NoFrida.apk candidate.apk
           sha256sum candidate.apk | tee candidate-sha256.txt
           apksigner verify --verbose candidate.apk
@@ -117,7 +119,7 @@ jobs:
           echo '=== CRASH BUFFER ==='
           cat runtime/crash-final.txt || true
           echo '=== RELEVANT LOGCAT ==='
-          grep -Ei -C 8 'FATAL EXCEPTION|AndroidRuntime|UnsatisfiedLinkError|ClassNotFoundException|NoClassDefFoundError|VerifyError|DexFile|SIGSEGV|SIGABRT|Fatal signal|com\.msandroid\.mobile|DownloadFileProvider' runtime/logcat-final.txt | tail -n 600 || true
+          grep -Ei -C 8 'FATAL EXCEPTION|AndroidRuntime|UnsatisfiedLinkError|ClassNotFoundException|NoClassDefFoundError|NoSuchMethodError|VerifyError|DexFile|SIGSEGV|SIGABRT|Fatal signal|com\.msandroid\.mobile|DownloadFileProvider|ConnectionResult' runtime/logcat-final.txt | tail -n 800 || true
           sudo rm -rf runtime/redroid-data || true
       - name: Upload candidate and diagnostics
         if: always()
