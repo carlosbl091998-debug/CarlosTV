@@ -5,6 +5,7 @@ on:
   push:
     branches: [xuper-vod-media-fallback]
     paths:
+      - 'tools/build_vod_media_fallback.sh'
       - 'tools/patch_download_file_provider.sh'
       - 'tools/repair_recovered_dex_headers.sh'
       - '.github/workflows/test-vod-download-provider-redroid-arm64.yml'
