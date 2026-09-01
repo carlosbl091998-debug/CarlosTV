@@ -11,22 +11,68 @@ cat > "$PATCH/smali/com/google/firebase/provider/FirebaseInitProvider.smali" <<'
 .class public Lcom/google/firebase/provider/FirebaseInitProvider;
 .super Landroid/content/ContentProvider;
 .source "FirebaseInitProvider.java"
+
+.field private static startupTime:Lcom/google/firebase/StartupTime;
+.field private static currentlyInitializing:Ljava/util/concurrent/atomic/AtomicBoolean;
+
+.method static constructor <clinit>()V
+    .locals 1
+    invoke-static {}, Lcom/google/firebase/StartupTime;->now()Lcom/google/firebase/StartupTime;
+    move-result-object v0
+    sput-object v0, Lcom/google/firebase/provider/FirebaseInitProvider;->startupTime:Lcom/google/firebase/StartupTime;
+    new-instance v0, Ljava/util/concurrent/atomic/AtomicBoolean;
+    invoke-direct {v0}, Ljava/util/concurrent/atomic/AtomicBoolean;-><init>()V
+    sput-object v0, Lcom/google/firebase/provider/FirebaseInitProvider;->currentlyInitializing:Ljava/util/concurrent/atomic/AtomicBoolean;
+    return-void
+.end method
+
 .method public constructor <init>()V
     .locals 0
     invoke-direct {p0}, Landroid/content/ContentProvider;-><init>()V
     return-void
 .end method
+
+.method public static getStartupTime()Lcom/google/firebase/StartupTime;
+    .locals 1
+    sget-object v0, Lcom/google/firebase/provider/FirebaseInitProvider;->startupTime:Lcom/google/firebase/StartupTime;
+    return-object v0
+.end method
+
+.method public static isCurrentlyInitializing()Z
+    .locals 1
+    sget-object v0, Lcom/google/firebase/provider/FirebaseInitProvider;->currentlyInitializing:Ljava/util/concurrent/atomic/AtomicBoolean;
+    invoke-virtual {v0}, Ljava/util/concurrent/atomic/AtomicBoolean;->get()Z
+    move-result v0
+    return v0
+.end method
+
 .method public onCreate()Z
-    .locals 2
+    .locals 3
+    sget-object v0, Lcom/google/firebase/provider/FirebaseInitProvider;->currentlyInitializing:Ljava/util/concurrent/atomic/AtomicBoolean;
+    const/4 v1, 0x1
+    invoke-virtual {v0, v1}, Ljava/util/concurrent/atomic/AtomicBoolean;->set(Z)V
+    :try_start
     invoke-virtual {p0}, Lcom/google/firebase/provider/FirebaseInitProvider;->getContext()Landroid/content/Context;
     move-result-object v0
     if-eqz v0, :done
     invoke-static {v0}, Lcom/google/firebase/FirebaseApp;->initializeApp(Landroid/content/Context;)Lcom/google/firebase/FirebaseApp;
-    move-result-object v1
-:done
-    const/4 v0, 0x1
+    move-result-object v2
+    :done
+    sget-object v0, Lcom/google/firebase/provider/FirebaseInitProvider;->currentlyInitializing:Ljava/util/concurrent/atomic/AtomicBoolean;
+    const/4 v1, 0x0
+    invoke-virtual {v0, v1}, Ljava/util/concurrent/atomic/AtomicBoolean;->set(Z)V
+    const/4 v0, 0x0
     return v0
+    :try_end
+    .catchall {:try_start .. :try_end} :catchall
+    :catchall
+    move-exception v2
+    sget-object v0, Lcom/google/firebase/provider/FirebaseInitProvider;->currentlyInitializing:Ljava/util/concurrent/atomic/AtomicBoolean;
+    const/4 v1, 0x0
+    invoke-virtual {v0, v1}, Ljava/util/concurrent/atomic/AtomicBoolean;->set(Z)V
+    throw v2
 .end method
+
 .method public getType(Landroid/net/Uri;)Ljava/lang/String;
     .locals 1
     const/4 v0, 0x0
@@ -61,4 +107,4 @@ zipalign -f 4 "$PATCH/unsigned.apk" "$PATCH/aligned.apk"
 apksigner sign --ks "$KEYSTORE" --ks-pass pass:android --key-pass pass:android --ks-key-alias androiddebugkey --out "$PATCH/signed.apk" "$PATCH/aligned.apk"
 apksigner verify --verbose "$PATCH/signed.apk" >/dev/null
 cp "$PATCH/signed.apk" "$APK"
-echo 'FIREBASE_INIT_PROVIDER_REAL_INIT_OK'; sha256sum "$APK"
+echo 'FIREBASE_INIT_PROVIDER_REAL_API_OK'; sha256sum "$APK"
