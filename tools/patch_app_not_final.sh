@@ -40,7 +40,32 @@ s=s[:m.start()]+replacement+s[m.end():]
 p.write_text(s)
 print('APP_C_FIREBASE_HOOK_NOOP_OK')
 PY
-      cp "$target" "$PATCH/App-patched.smali"
+      zaad="$dir/com/google/android/gms/common/api/internal/zaad.smali"
+      if [ -s "$zaad" ]; then
+        cp "$zaad" "$PATCH/zaad-original.smali"
+        python3 - "$zaad" <<'PY'
+import pathlib,re,sys
+p=pathlib.Path(sys.argv[1])
+s=p.read_text()
+# Android 15 rejects the recovered zaad.zac body because BasePendingResult is not
+# verifier-compatible with PendingResult in this recovered multidex set. The hook
+# only tracks pending results for GoogleApi cleanup, so make this specific method
+# a no-op while preserving the rest of Google Play Services.
+pat=r'(?ms)^\.method\s+([^\n]*\s)?zac\(Lcom/google/android/gms/common/api/internal/BasePendingResult;Z\)V\n.*?^\.end method$'
+m=re.search(pat,s)
+if not m:
+    raise SystemExit('zaad.zac(BasePendingResult,Z)V not found')
+header=m.group(0).splitlines()[0]
+replacement=header+'\n    .locals 0\n    return-void\n.end method'
+s=s[:m.start()]+replacement+s[m.end():]
+p.write_text(s)
+print('ZAAD_ZAC_VERIFYERROR_NOOP_OK')
+PY
+        cp "$zaad" "$PATCH/zaad-patched.smali"
+      else
+        echo 'zaad.smali not present in App dex' >&2
+        exit 66
+      fi
       java -jar "$SMALI_JAR" assemble "$dir" -o "$PATCH/$entry.new"
       test -s "$PATCH/$entry.new"
       break
@@ -57,5 +82,5 @@ zipalign -f 4 "$PATCH/unsigned.apk" "$PATCH/aligned.apk"
 apksigner sign --ks "$KEYSTORE" --ks-pass pass:android --key-pass pass:android --ks-key-alias androiddebugkey --out "$PATCH/signed.apk" "$PATCH/aligned.apk"
 apksigner verify --verbose "$PATCH/signed.apk" >/dev/null
 cp "$PATCH/signed.apk" "$APK"
-echo 'APP_FINAL_REMOVED_AND_FIREBASE_HOOK_SKIPPED_OK'
+echo 'APP_FINAL_FIREBASE_AND_ZAAD_VERIFY_PATCH_OK'
 sha256sum "$APK"
